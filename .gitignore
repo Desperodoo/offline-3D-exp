@@ -1,0 +1,7 @@
+logs/
+devel/
+build/
+.catkin_tools/
+misc/
+topo_outputs/
+src/MARSIM/map_generator/resource/
