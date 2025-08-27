@@ -37,6 +37,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
     if (fp_->enable_auto_start_ && !fd_->auto_start_triggered_ && checkAutoStartCondition()) {
       fd_->trigger_ = true;
       fd_->auto_start_triggered_ = true;
+      fd_->exploration_start_time_ = ros::Time::now();  // 记录探索开始时间
       ROS_INFO("\033[32m[Auto Start] Exploration started automatically! Condition: %s, Delay: %.1fs\033[0m", 
                fp_->auto_start_condition_.c_str(), fp_->auto_start_delay_);
       transitState(PLAN_TRAJ, "auto_start");
@@ -64,7 +65,55 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
     if (!safe) {
       stopTraj();
     }
-    ROS_WARN_THROTTLE(1.0, "Finished.");
+    
+    // 检查安全退出条件
+    if (fp_->enable_safe_exit_ && !fd_->safe_exit_initiated_ && !fd_->finish_state_enter_time_.isZero()) {
+      double finish_elapsed = (ros::Time::now() - fd_->finish_state_enter_time_).toSec();
+      if (finish_elapsed >= fp_->safe_exit_delay_) {
+        fd_->safe_exit_initiated_ = true;
+        ROS_WARN("\033[35m[Safe Exit] Initiating safe shutdown after %.1fs in FINISH state\033[0m", 
+                 finish_elapsed);
+        
+        // 停止所有轨迹
+        stopTraj();
+        
+        // 发布最终状态
+        std_msgs::String final_status;
+        if (fd_->exploration_timeout_) {
+          final_status.data = "EXPLORATION_TERMINATED_TIMEOUT";
+        } else if (fd_->exploration_completed_) {
+          final_status.data = "EXPLORATION_TERMINATED_COMPLETED";  
+        } else {
+          final_status.data = "EXPLORATION_TERMINATED_NO_FRONTIER";
+        }
+        auto_stop_status_pub_.publish(final_status);
+        
+        // 停止所有定时器，避免线程冲突
+        exec_timer_.stop();
+        
+        // 延迟一点时间确保定时器停止
+        ros::Duration(0.5).sleep();
+        
+        // 安全关闭ROS节点
+        ROS_INFO("\033[35m[Safe Exit] Shutting down exploration node safely...\033[0m");
+        
+        // 使用更温和的退出方式
+        ros::requestShutdown();
+        return;
+      } else {
+        ROS_INFO_THROTTLE(2.0, "\033[36m[Safe Exit] Will exit in %.1fs\033[0m", 
+                          fp_->safe_exit_delay_ - finish_elapsed);
+      }
+    }
+    
+    // 显示不同的完成原因
+    if (fd_->exploration_timeout_) {
+      ROS_WARN_THROTTLE(1.0, "\033[33mExploration FINISHED: TIMEOUT\033[0m");
+    } else if (fd_->exploration_completed_) {
+      ROS_WARN_THROTTLE(1.0, "\033[33mExploration FINISHED: COMPLETED\033[0m");
+    } else {
+      ROS_WARN_THROTTLE(1.0, "\033[33mExploration FINISHED: NO_FRONTIER\033[0m");
+    }
     break;
   }
 
@@ -73,6 +122,17 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       return;
     if (planner_manager_->topo_graph_->odom_node_->neighbors_.empty())
       return;
+    
+    // 检查自动停止条件
+    if (fp_->enable_auto_stop_ && checkAutoStopCondition()) {
+      if (fd_->exploration_timeout_) {
+        transitState(FINISH, "exploration_timeout");
+      } else if (fd_->exploration_completed_) {
+        transitState(FINISH, "exploration_completed");
+      }
+      return;
+    }
+      
     ros::Time start = ros::Time::now();
     // 要报min-step的case
     LocalTrajData *info = &planner_manager_->local_data_;
@@ -106,6 +166,9 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
       fd_->half_resolution = false;
 
     } else if (res == NO_FRONTIER) {
+      // NO_FRONTIER直接表示探索完成
+      ROS_INFO("[Auto Stop] NO_FRONTIER detected - exploration completed");
+      
       // if (planner_manager_->topo_graph_->global_view_points_.empty())
       transitState(FINISH, "PLAN_TRAJ: no frontier");
       fd_->static_state_ = true;
@@ -123,6 +186,19 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
   }
 
   case EXEC_TRAJ: {
+    // 检查自动停止条件
+    if (fp_->enable_auto_stop_ && checkAutoStopCondition()) {
+      if (fd_->exploration_timeout_) {
+        stopTraj();
+        transitState(FINISH, "exploration_timeout");
+        return;
+      } else if (fd_->exploration_completed_) {
+        stopTraj();
+        transitState(FINISH, "exploration_completed");
+        return;
+      }
+    }
+    
     // collision check
     double collision_time;
     bool safe = planner_manager_->checkTrajCollision(collision_time);
@@ -196,7 +272,17 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   // 自动开始探索参数
   nh.param("fsm/enable_auto_start", fp_->enable_auto_start_, false);
   nh.param("fsm/auto_start_delay", fp_->auto_start_delay_, 5.0);
-  nh.param("fsm/auto_start_condition", fp_->auto_start_condition_, string("delay"));
+  nh.param("fsm/auto_start_condition", fp_->auto_start_condition_, string("odom_ready"));
+  
+  // 自动停止探索参数
+  nh.param("fsm/enable_auto_stop", fp_->enable_auto_stop_, false);
+  nh.param("fsm/max_exploration_time", fp_->max_exploration_time_, 1800.0);  // 30分钟
+  nh.param("fsm/completion_check_interval", fp_->completion_check_interval_, 5.0);  // 5秒检查一次
+  
+  // 安全退出参数
+  nh.param("fsm/enable_safe_exit", fp_->enable_safe_exit_, false);
+  nh.param("fsm/safe_exit_delay", fp_->safe_exit_delay_, 10.0);  // FINISH状态10秒后退出
+  
   /* Initialize main modules */
   // expl_manager_.reset(new FastExplorationManager);
   // expl_manager_->initialize(nh);
@@ -214,6 +300,16 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   // 初始化自动开始相关状态
   fd_->system_start_time_ = ros::Time::now();
   fd_->auto_start_triggered_ = false;
+  
+  // 初始化自动停止相关状态
+  fd_->exploration_start_time_ = ros::Time(0);
+  fd_->last_completion_check_time_ = ros::Time::now();
+  fd_->exploration_timeout_ = false;
+  fd_->exploration_completed_ = false;
+  
+  // 初始化安全退出相关状态
+  fd_->finish_state_enter_time_ = ros::Time(0);
+  fd_->safe_exit_initiated_ = false;
   battary_sub_ =
       nh.subscribe("/mavros/battery", 10, &FastExplorationFSM::battaryCallback,
                    this, ros::TransportHints().tcpNoDelay());
@@ -244,6 +340,7 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
   static_pub_ = nh.advertise<std_msgs::Bool>("/planning/static", 10);
   state_pub_ = nh.advertise<visualization_msgs::Marker>("/planning/state", 10);
   auto_start_status_pub_ = nh.advertise<std_msgs::String>("/exploration/auto_start_status", 10);
+  auto_stop_status_pub_ = nh.advertise<std_msgs::String>("/exploration/auto_stop_status", 10);
 
   string odom_topic, cloud_topic;
   nh.getParam("odometry_topic", odom_topic);

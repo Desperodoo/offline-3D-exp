@@ -7,6 +7,7 @@
  * @Copyright (c) 2024 by ning-zelin, All Rights Reserved.
  */
 #include <frontier_manager/frontier_manager.h>
+#include <cmath>
 
 class UF {
 public:
@@ -46,7 +47,9 @@ private:
 
 
 
-void FrontierManager::generateTSPViewpoints(Eigen::Vector3f&center,  vector<TopoNode::Ptr> &viewpoints) {
+void FrontierManager::generateTSPViewpoints(Eigen::Vector3f&center,  
+                                           vector<TopoNode::Ptr> &viewpoints,
+                                           vector<ViewpointBenefit> *viewpoint_benefits) {
 
   unordered_set<ClusterInfo::Ptr> revp_clusters_set; // (re)-generate viewpoints clusters
   vector<float> distance_odom2cluster;
@@ -156,15 +159,40 @@ void FrontierManager::generateTSPViewpoints(Eigen::Vector3f&center,  vector<Topo
   sort(idx2.begin(), idx2.end(), [&](int a, int b) { return distance2odom2[a] < distance2odom2[b]; });
   float mean_distance = accumulate(distance2odom2.begin(), distance2odom2.end(), 0.0) / distance2odom2.size();
   viewpoints.clear();
+  if (viewpoint_benefits) {
+    viewpoint_benefits->clear(); // 清空收益信息
+  }
+  
   for (int i = 0; i < (int)idx2.size(); i++) {
     // 剔除异常值
     // if (i > (int)(idx2.size() / 2.0) && distance2odom2[idx2[i]] > mean_distance * 5.0)
     //   break;
+    ClusterInfo::Ptr cluster = tsp_clusters[idx2[i]];
     TopoNode::Ptr vp_node = make_shared<TopoNode>();
     vp_node->is_viewpoint_ = true;
-    vp_node->center_ = tsp_clusters[idx2[i]]->best_vp_;
-    vp_node->yaw_ = tsp_clusters[idx2[i]]->best_vp_yaw_;
+    vp_node->center_ = cluster->best_vp_;
+    vp_node->yaw_ = cluster->best_vp_yaw_;
     viewpoints.push_back(vp_node);
+    
+    // 收集收益信息
+    if (viewpoint_benefits) {
+      ViewpointBenefit benefit;
+      benefit.viewpoint = vp_node;
+      benefit.observation_score = cluster->observation_score_;
+      
+      // 安全的距离赋值，检查异常值
+      float raw_distance = cluster->distance_;
+      if (std::isfinite(raw_distance) && raw_distance >= 0.0f && raw_distance < 1000.0f) {
+        benefit.cluster_distance = static_cast<double>(raw_distance);
+      } else {
+        ROS_WARN("Invalid cluster distance %.6f, using default 1.0", raw_distance);
+        benefit.cluster_distance = 1.0;
+      }
+      
+      benefit.is_reachable = cluster->is_reachable_;
+      
+      viewpoint_benefits->push_back(benefit);
+    }
   }
   ROS_INFO("vp cluster cost: %fms  ,remove unreachable cost: %fms, select vp cost: %fms", (t2 - t1).toSec() * 1000, (t3 - t2).toSec() * 1000,
            (t4 - t3).toSec() * 1000);

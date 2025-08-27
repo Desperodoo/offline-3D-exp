@@ -573,7 +573,7 @@ void TopoExtractorIntegrated::exportSimpleFormat(const std::vector<NodeInfo>& no
     }
     
     // 写入节点信息
-    file << "# 节点格式: node_id x y z yaw is_viewpoint is_current is_history region_id is_reachable tsp_order distance" << std::endl;
+    file << "# 节点格式: node_id x y z yaw is_viewpoint is_current is_history region_id is_reachable tsp_order_index distance observation_score cluster_distance" << std::endl;
     file << "NODES" << std::endl;
     for (const auto& node : nodes) {
         file << node.node_id << " "
@@ -586,7 +586,9 @@ void TopoExtractorIntegrated::exportSimpleFormat(const std::vector<NodeInfo>& no
              << node.region_id << " "
              << (node.is_reachable ? 1 : 0) << " "
              << node.tsp_order_index << " "
-             << std::fixed << std::setprecision(6) << node.reachable_distance << std::endl;
+             << std::fixed << std::setprecision(6) << node.reachable_distance << " "
+             << node.observation_score << " "
+             << node.cluster_distance << std::endl;
     }
     
     // 写入边信息
@@ -605,19 +607,23 @@ void TopoExtractorIntegrated::exportSimpleFormat(const std::vector<NodeInfo>& no
 
 void TopoExtractorIntegrated::updateViewpointInfo(const std::vector<TopoNode::Ptr>& reachable_viewpoints,
                                                   const std::vector<double>& reachable_distances,
-                                                  const std::vector<int>& tsp_indices) {
+                                                  const std::vector<int>& tsp_indices,
+                                                  const std::vector<ViewpointBenefit>& viewpoint_benefits) {
     // 清空之前的信息
     viewpoint_reachability_map_.clear();
     viewpoint_distance_map_.clear();
     viewpoint_tsp_index_map_.clear();
+    viewpoint_observation_score_map_.clear();
+    viewpoint_cluster_distance_map_.clear();
     
     if (debug_output_) {
-        ROS_INFO("=== Updating Viewpoint Info ===");
+        ROS_INFO("=== Updating Simplified Viewpoint Info ===");
         ROS_INFO("Reachable viewpoints: %zu", reachable_viewpoints.size());
         ROS_INFO("TSP indices size: %zu", tsp_indices.size());
+        ROS_INFO("Viewpoint benefits size: %zu", viewpoint_benefits.size());
     }
     
-    // 记录可达的viewpoints
+    // 记录可达的viewpoints基本信息
     for (size_t i = 0; i < reachable_viewpoints.size(); ++i) {
         auto vp = reachable_viewpoints[i];
         if (!vp) continue;
@@ -626,18 +632,29 @@ void TopoExtractorIntegrated::updateViewpointInfo(const std::vector<TopoNode::Pt
         if (i < reachable_distances.size()) {
             viewpoint_distance_map_[vp] = reachable_distances[i];
         }
+    }
+    
+    // 记录收益信息
+    for (const auto& benefit : viewpoint_benefits) {
+        if (!benefit.viewpoint) continue;
+        
+        viewpoint_observation_score_map_[benefit.viewpoint] = benefit.observation_score;
+        viewpoint_cluster_distance_map_[benefit.viewpoint] = benefit.cluster_distance;
         
         if (debug_output_) {
-            ROS_DEBUG("Viewpoint %p marked as reachable, distance: %.2f", 
-                     vp.get(), i < reachable_distances.size() ? reachable_distances[i] : -1.0);
+            ROS_INFO("VP benefit: obs_score=%.1f, cluster_dist=%.2f, reachable=%s",
+                     benefit.observation_score, benefit.cluster_distance,
+                     benefit.is_reachable ? "YES" : "NO");
         }
     }
+    
+    ROS_INFO("TopoExtractor: Updated %zu observation scores, %zu cluster distances", 
+             viewpoint_observation_score_map_.size(), viewpoint_cluster_distance_map_.size());
     
     // 记录TSP顺序信息
     for (size_t i = 0; i < tsp_indices.size(); ++i) {
         int tsp_idx = tsp_indices[i];
         if (tsp_idx > 0 && tsp_idx <= (int)reachable_viewpoints.size()) {
-            // TSP索引从1开始，0是起始位置(odom)
             TopoNode::Ptr vp = reachable_viewpoints[tsp_idx - 1];
             viewpoint_tsp_index_map_[vp] = static_cast<int>(i);
             
@@ -649,8 +666,8 @@ void TopoExtractorIntegrated::updateViewpointInfo(const std::vector<TopoNode::Pt
     }
     
     if (debug_output_) {
-        ROS_INFO("✓ Updated info for %zu reachable viewpoints, %zu with TSP order", 
-                 viewpoint_reachability_map_.size(), viewpoint_tsp_index_map_.size());
+        ROS_INFO("✓ Updated info for %zu reachable viewpoints with benefits", 
+                 viewpoint_reachability_map_.size());
     }
 }
 
@@ -707,13 +724,20 @@ void TopoExtractorIntegrated::extractRegionNodesEnhanced(std::vector<NodeInfo>& 
             node_info.reachable_distance = viewpoint_distance_map_.count(topo_node) > 0 ?
                                           viewpoint_distance_map_[topo_node] : -1.0;
             
+            // 收益信息字段 - 为所有节点设置收益信息（视点和非视点都设置）
+            node_info.observation_score = viewpoint_observation_score_map_.count(topo_node) > 0 ?
+                                         viewpoint_observation_score_map_[topo_node] : 0.0;
+            node_info.cluster_distance = viewpoint_cluster_distance_map_.count(topo_node) > 0 ?
+                                        viewpoint_cluster_distance_map_[topo_node] : -1.0;
+            
             nodes.push_back(node_info);
             
             if (topo_node->is_viewpoint_) {
                 total_viewpoints++;
                 if (debug_enabled) {
-                    ROS_INFO("⭐ FOUND VIEWPOINT in regions_arr_[%zu]: node %d (reachable: %s, TSP idx: %d)", 
-                             i, node_info.node_id, node_info.is_reachable ? "YES" : "NO", node_info.tsp_order_index);
+                    ROS_INFO("⭐ FOUND VIEWPOINT in regions_arr_[%zu]: node %d (reachable: %s, TSP idx: %d, obs_score: %.1f, cluster_dist: %.2f)", 
+                             i, node_info.node_id, node_info.is_reachable ? "YES" : "NO", node_info.tsp_order_index,
+                             node_info.observation_score, node_info.cluster_distance);
                 }
             }
             
@@ -755,14 +779,21 @@ void TopoExtractorIntegrated::extractRegionNodesEnhanced(std::vector<NodeInfo>& 
             node_info.reachable_distance = viewpoint_distance_map_.count(topo_node) > 0 ?
                                           viewpoint_distance_map_[topo_node] : -1.0;
             
+            // 收益信息字段 - 为所有节点设置收益信息（视点和非视点都设置）
+            node_info.observation_score = viewpoint_observation_score_map_.count(topo_node) > 0 ?
+                                         viewpoint_observation_score_map_[topo_node] : 0.0;
+            node_info.cluster_distance = viewpoint_cluster_distance_map_.count(topo_node) > 0 ?
+                                        viewpoint_cluster_distance_map_[topo_node] : -1.0;
+            
             nodes.push_back(node_info);
             total_topo_nodes++;
             
             if (topo_node->is_viewpoint_) {
                 total_viewpoints++;
                 if (debug_enabled) {
-                    ROS_INFO("⭐ FOUND VIEWPOINT in toponodes_region[%zu]: node %d (reachable: %s, TSP idx: %d)", 
-                             i, node_info.node_id, node_info.is_reachable ? "YES" : "NO", node_info.tsp_order_index);
+                    ROS_INFO("⭐ FOUND VIEWPOINT in toponodes_region[%zu]: node %d (reachable: %s, TSP idx: %d, obs_score: %.1f, cluster_dist: %.2f)", 
+                             i, node_info.node_id, node_info.is_reachable ? "YES" : "NO", node_info.tsp_order_index,
+                             node_info.observation_score, node_info.cluster_distance);
                 }
             }
             
@@ -806,15 +837,22 @@ void TopoExtractorIntegrated::extractRegionNodesEnhanced(std::vector<NodeInfo>& 
             node_info.reachable_distance = viewpoint_distance_map_.count(topo_node) > 0 ?
                                           viewpoint_distance_map_[topo_node] : -1.0;
             
+            // 收益信息字段 - 为所有节点设置收益信息（视点和非视点都设置）
+            node_info.observation_score = viewpoint_observation_score_map_.count(topo_node) > 0 ?
+                                         viewpoint_observation_score_map_[topo_node] : 0.0;
+            node_info.cluster_distance = viewpoint_cluster_distance_map_.count(topo_node) > 0 ?
+                                        viewpoint_cluster_distance_map_[topo_node] : -1.0;
+            
             nodes.push_back(node_info);
             total_topo_nodes++;
             
             if (topo_node->is_viewpoint_) {
                 total_viewpoints++;
                 if (debug_enabled) {
-                    ROS_INFO("⭐ FOUND VIEWPOINT in map region [%d,%d,%d]: node %d (reachable: %s, TSP idx: %d)", 
+                    ROS_INFO("⭐ FOUND VIEWPOINT in map region [%d,%d,%d]: node %d (reachable: %s, TSP idx: %d, obs_score: %.1f, cluster_dist: %.2f)", 
                              pair.first.x(), pair.first.y(), pair.first.z(), node_info.node_id,
-                             node_info.is_reachable ? "YES" : "NO", node_info.tsp_order_index);
+                             node_info.is_reachable ? "YES" : "NO", node_info.tsp_order_index,
+                             node_info.observation_score, node_info.cluster_distance);
                 }
             }
             
@@ -849,14 +887,21 @@ void TopoExtractorIntegrated::extractRegionNodesEnhanced(std::vector<NodeInfo>& 
         node_info.reachable_distance = viewpoint_distance_map_.count(topo_node) > 0 ?
                                       viewpoint_distance_map_[topo_node] : -1.0;
         
+        // 收益信息字段 - 为所有节点设置收益信息（视点和非视点都设置）
+        node_info.observation_score = viewpoint_observation_score_map_.count(topo_node) > 0 ?
+                                     viewpoint_observation_score_map_[topo_node] : 0.0;
+        node_info.cluster_distance = viewpoint_cluster_distance_map_.count(topo_node) > 0 ?
+                                    viewpoint_cluster_distance_map_[topo_node] : -1.0;
+        
         nodes.push_back(node_info);
         total_topo_nodes++;
         
         if (topo_node->is_viewpoint_) {
             total_viewpoints++;
             if (debug_enabled) {
-                ROS_INFO("⭐ FOUND VIEWPOINT in history_odom[%zu]: node %d (reachable: %s, TSP idx: %d)", 
-                         i, node_info.node_id, node_info.is_reachable ? "YES" : "NO", node_info.tsp_order_index);
+                ROS_INFO("⭐ FOUND VIEWPOINT in history_odom[%zu]: node %d (reachable: %s, TSP idx: %d, obs_score: %.1f, cluster_dist: %.2f)", 
+                         i, node_info.node_id, node_info.is_reachable ? "YES" : "NO", node_info.tsp_order_index,
+                         node_info.observation_score, node_info.cluster_distance);
             }
         }
         
@@ -904,18 +949,24 @@ void TopoExtractorIntegrated::extractOdomNodeEnhanced(std::vector<NodeInfo>& nod
         odom_node.tsp_order_index = 0; // 在TSP中，索引0通常代表起始位置
         odom_node.reachable_distance = 0.0; // 到自身的距离为0
         
+        // 收益信息字段 - 为当前odom节点也设置收益信息
+        odom_node.observation_score = viewpoint_observation_score_map_.count(topo_graph_->odom_node_) > 0 ?
+                                     viewpoint_observation_score_map_[topo_graph_->odom_node_] : 0.0;
+        odom_node.cluster_distance = viewpoint_cluster_distance_map_.count(topo_graph_->odom_node_) > 0 ?
+                                    viewpoint_cluster_distance_map_[topo_graph_->odom_node_] : -1.0;
+        
         nodes.push_back(odom_node);
         
         if (topo_graph_->odom_node_->is_viewpoint_) {
-            ROS_INFO("⭐ Current odom node %d is a VIEWPOINT at pos(%.2f,%.2f,%.2f) (TSP idx: %d)", 
+            ROS_INFO("⭐ Current odom node %d is a VIEWPOINT at pos(%.2f,%.2f,%.2f) (TSP idx: %d, obs_score: %.1f, cluster_dist: %.2f)", 
                      odom_node.node_id,
                      odom_node.position.x(), odom_node.position.y(), odom_node.position.z(),
-                     odom_node.tsp_order_index);
+                     odom_node.tsp_order_index, odom_node.observation_score, odom_node.cluster_distance);
         } else if (debug_enabled) {
-            ROS_INFO("Added current odom node %d: pos(%.2f,%.2f,%.2f), yaw=%.2f (not viewpoint)", 
+            ROS_INFO("Added current odom node %d: pos(%.2f,%.2f,%.2f), yaw=%.2f (not viewpoint, obs_score: %.1f, cluster_dist: %.2f)", 
                      odom_node.node_id,
                      odom_node.position.x(), odom_node.position.y(), odom_node.position.z(),
-                     odom_node.yaw);
+                     odom_node.yaw, odom_node.observation_score, odom_node.cluster_distance);
         }
     } else {
         ROS_WARN("No current odom node available");
@@ -968,14 +1019,27 @@ void TopoExtractorIntegrated::extractViewpointNodesEnhanced(std::vector<NodeInfo
                                      viewpoint_tsp_index_map_[topo_node] : -1;
             vp_node.reachable_distance = viewpoint_distance_map_.count(topo_node) > 0 ?
                                         viewpoint_distance_map_[topo_node] : -1.0;
+                                        
+            // 收益信息字段 - 使用简化的收益信息
+            vp_node.observation_score = viewpoint_observation_score_map_.count(topo_node) > 0 ?
+                                       viewpoint_observation_score_map_[topo_node] : 0.0;
+            vp_node.cluster_distance = viewpoint_cluster_distance_map_.count(topo_node) > 0 ?
+                                      viewpoint_cluster_distance_map_[topo_node] : -1.0;
+            
+            if (debug_enabled) {
+                ROS_INFO("VP node %d: obs_map=%s (%.1f), cluster_map=%s (%.2f)", 
+                         vp_node.node_id,
+                         viewpoint_observation_score_map_.count(topo_node) > 0 ? "FOUND" : "MISSING", vp_node.observation_score,
+                         viewpoint_cluster_distance_map_.count(topo_node) > 0 ? "FOUND" : "MISSING", vp_node.cluster_distance);
+            }
             
             nodes.push_back(vp_node);
             
             if (debug_enabled) {
-                ROS_INFO("Added enhanced viewpoint node %d: pos(%.2f,%.2f,%.2f), yaw=%.2f (reachable: %s, TSP idx: %d)", 
+                ROS_INFO("Added viewpoint %d: pos(%.2f,%.2f,%.2f), obs_score=%.1f, cluster_dist=%.2f", 
                          vp_node.node_id,
                          vp_node.position.x(), vp_node.position.y(), vp_node.position.z(),
-                         vp_node.yaw, vp_node.is_reachable ? "YES" : "NO", vp_node.tsp_order_index);
+                         vp_node.observation_score, vp_node.cluster_distance);
             }
         }
     }

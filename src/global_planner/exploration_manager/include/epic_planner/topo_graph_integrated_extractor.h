@@ -14,6 +14,10 @@
 #include <memory>
 #include <unordered_map>
 #include <epic_planner/exploration_statistics.h>
+#include <frontier_manager/frontier_manager.h>
+
+// 前向声明
+struct ViewpointBenefit;
 
 namespace fast_planner {
 
@@ -29,6 +33,10 @@ struct NodeInfo {
     bool is_reachable;          // 新增：节点是否可达（从viewpoint过滤中获取）
     int tsp_order_index;        // 新增：在TSP求解结果中的顺序索引 (-1表示未参与TSP)
     double reachable_distance;  // 新增：到该节点的可达距离
+    
+    // 简化的视点收益信息（从selectBestViewpoint获取）
+    double observation_score;   // 观测得分（能看到的frontier点数量）
+    double cluster_distance;    // 集群距离成本（cluster->distance_）
 };
 
 // 边信息结构
@@ -174,14 +182,16 @@ public:
     void setDebugOutput(bool debug) { debug_output_ = debug; }
     
     /**
-     * @brief 更新viewpoint的reachability和TSP信息
+     * @brief 更新viewpoint的信息（简化版本）
      * @param reachable_viewpoints 可达的viewpoint节点列表
      * @param reachable_distances 到每个viewpoint的距离
-     * @param tsp_indices TSP求解结果中的顺序索引 (从planGlobalPath获取)
+     * @param tsp_indices TSP求解结果中的顺序索引
+     * @param viewpoint_benefits 视点收益信息（从generateTSPViewpoints获得）
      */
     void updateViewpointInfo(const std::vector<TopoNode::Ptr>& reachable_viewpoints,
                             const std::vector<double>& reachable_distances,
-                            const std::vector<int>& tsp_indices);
+                            const std::vector<int>& tsp_indices,
+                            const std::vector<ViewpointBenefit>& viewpoint_benefits = std::vector<ViewpointBenefit>());
     
     /**
      * @brief 设置探索统计模块
@@ -190,10 +200,14 @@ public:
     void setExplorationStats(ExplorationStatistics::Ptr stats) { exploration_stats_ = stats; }
 
 private:
-    // 存储viewpoint的扩展信息
+    // 存储viewpoint的基本信息
     std::unordered_map<TopoNode::Ptr, bool> viewpoint_reachability_map_;
     std::unordered_map<TopoNode::Ptr, double> viewpoint_distance_map_;  
     std::unordered_map<TopoNode::Ptr, int> viewpoint_tsp_index_map_;
+    
+    // 存储viewpoint的收益信息（简化版）
+    std::unordered_map<TopoNode::Ptr, double> viewpoint_observation_score_map_;
+    std::unordered_map<TopoNode::Ptr, double> viewpoint_cluster_distance_map_;
 
 private:
     /**

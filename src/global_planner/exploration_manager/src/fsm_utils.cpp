@@ -27,6 +27,26 @@ void FastExplorationFSM::pubState() {
     auto_start_status_pub_.publish(auto_status_msg);
   }
   
+  // 发布自动停止状态信息
+  if (fp_->enable_auto_stop_ && !fd_->exploration_start_time_.isZero() && 
+      (state_ == PLAN_TRAJ || state_ == EXEC_TRAJ)) {
+    std_msgs::String auto_stop_msg;
+    double exploration_elapsed = (ros::Time::now() - fd_->exploration_start_time_).toSec();
+    
+    std::ostringstream oss;
+    oss << "exploration_time: " << std::fixed << std::setprecision(1) 
+        << exploration_elapsed << "/" << fp_->max_exploration_time_ << "s";
+    
+    if (fd_->exploration_timeout_) {
+      oss << " [TIMEOUT]";
+    } else if (fd_->exploration_completed_) {
+      oss << " [COMPLETED]";
+    }
+    
+    auto_stop_msg.data = oss.str();
+    auto_stop_status_pub_.publish(auto_stop_msg);
+  }
+  
   Marker state_marker;
   state_marker.type = Marker::TEXT_VIEW_FACING;
   state_marker.pose.position.x = fd_->odom_pos_.x();
@@ -111,6 +131,7 @@ int FastExplorationFSM::callExplorationPlanner() {
     traj_utils::PolyTraj poly_yaw_traj_msg;
     planner_manager_->polyYawTraj2ROSMsg(poly_yaw_traj_msg, info->start_time_);
     fd_->newest_yaw_traj_ = poly_yaw_traj_msg;
+    
     return SUCCEED;
   } else {
     return FAIL;
@@ -124,6 +145,7 @@ void FastExplorationFSM::triggerCallback(const nav_msgs::PathConstPtr &msg) {
   if (state_ != WAIT_TRIGGER)
     return;
   fd_->trigger_ = true;
+  fd_->exploration_start_time_ = ros::Time::now();  // 记录探索开始时间
   cout << "Triggered!" << endl;
   total_time_ = ros::Time::now().toSec();
   transitState(PLAN_TRAJ, "triggerCallback");
@@ -169,6 +191,14 @@ void FastExplorationFSM::CloudOdomCallback(const sensor_msgs::PointCloud2ConstPt
 void FastExplorationFSM::transitState(EXPL_STATE new_state, string pos_call, bool red) {
   int pre_s = int(state_);
   state_ = new_state;
+  
+  // 记录进入FINISH状态的时间
+  if (new_state == FINISH && fd_->finish_state_enter_time_.isZero()) {
+    fd_->finish_state_enter_time_ = ros::Time::now();
+    ROS_INFO("\033[36m[Safe Exit] Entered FINISH state, will exit in %.1fs if enabled\033[0m", 
+             fp_->safe_exit_delay_);
+  }
+  
   if (!red) {
     cout << "\033[32m[" + pos_call + "]\033[0m: from " + fd_->state_str_[pre_s] + " to " + fd_->state_str_[int(new_state)] << endl;
   } else {
@@ -209,4 +239,36 @@ bool FastExplorationFSM::checkAutoStartCondition() {
   bool odom_condition = fd_->have_odom_;
   bool delay_condition = elapsed_time >= fp_->auto_start_delay_;
   return odom_condition && delay_condition;
+}
+
+bool FastExplorationFSM::checkAutoStopCondition() {
+  if (fd_->exploration_start_time_.isZero()) {
+    // 探索还没开始
+    return false;
+  }
+  
+  ros::Time current_time = ros::Time::now();
+  double exploration_elapsed = (current_time - fd_->exploration_start_time_).toSec();
+  double check_elapsed = (current_time - fd_->last_completion_check_time_).toSec();
+  
+  // 检查超时停止条件
+  if (exploration_elapsed > fp_->max_exploration_time_) {
+    fd_->exploration_timeout_ = true;
+    ROS_WARN("\033[33m[Auto Stop] Exploration timeout! %.1fs > %.1fs\033[0m", 
+             exploration_elapsed, fp_->max_exploration_time_);
+    return true;
+  }
+  
+  // 定期检查完成条件（避免频繁检查）
+  if (check_elapsed < fp_->completion_check_interval_) {
+    return false;
+  }
+  
+  fd_->last_completion_check_time_ = current_time;
+  
+  // 显示探索进度信息
+  ROS_INFO_THROTTLE(30.0, "[Auto Stop] Exploration progress - Time: %.1fs/%.1fs", 
+                    exploration_elapsed, fp_->max_exploration_time_);
+  
+  return false;
 }

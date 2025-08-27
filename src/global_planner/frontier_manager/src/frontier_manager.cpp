@@ -1106,9 +1106,11 @@ void FrontierManager::selectBestViewpoint(ClusterInfo::Ptr &cluster) {
                                   std::max_element(score.begin(), score.end()));
   if (score[best_vp_idx] == 0) {
     cluster->is_reachable_ = false;
+    cluster->observation_score_ = 0.0;
     cluster->vp_clusters_.clear();
   } else {
     cluster->is_reachable_ = true;
+    cluster->observation_score_ = score[best_vp_idx]; // 保存观测得分
     cluster->best_vp_yaw_ = yaw[best_vp_idx];
     cluster->best_vp_ = vps[best_vp_idx].getVector3fMap();
     if (((cluster->best_vp_ - graph_->odom_node_->center_).norm() < 1e-2) &&

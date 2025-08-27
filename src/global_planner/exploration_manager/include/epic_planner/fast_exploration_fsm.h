@@ -61,7 +61,7 @@ private:
   ros::Timer exec_timer_, global_path_update_timer_;
   ros::Subscriber trigger_sub_, map_update_sub_, battary_sub_;
   ros::Publisher stop_pub_, new_pub_, replan_pub_, poly_traj_pub_, heartbeat_pub_, time_cost_pub_, poly_yaw_traj_pub_, static_pub_, state_pub_,
-  land_pub_, auto_start_status_pub_;
+  land_pub_, auto_start_status_pub_, auto_stop_status_pub_;
   double total_time_;
 
   /*cloud odom callback*/
@@ -78,6 +78,7 @@ private:
   void transitState(EXPL_STATE new_state, string pos_call, bool red = false);
   void battaryCallback(const sensor_msgs::BatteryStateConstPtr &msg);
   bool checkAutoStartCondition();  // 检查自动开始条件
+  bool checkAutoStopCondition();   // 检查自动停止条件
   /* ROS functions */
   void FSMCallback(const ros::TimerEvent &e);
   // void PlannerDebugFSMCallback(const ros::TimerEvent &e);

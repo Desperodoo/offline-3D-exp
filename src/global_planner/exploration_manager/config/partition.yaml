@@ -1,6 +1,23 @@
 #topic param:
 odometry_topic: /quad_0/lidar_slam/odom
 cloud_topic: /quad0_pcl_render_node/cloud
+
+# 自动开始探索参数
+fsm/enable_auto_start: true
+fsm/auto_start_delay: 5.0
+fsm/auto_start_condition: "odom_ready"  # 可选: "odom_ready", "map_ready"
+
+# 自动停止探索参数
+fsm/enable_auto_stop: true
+fsm/max_exploration_time: 1200.0  # 20分钟最大探索时间
+fsm/completion_check_interval: 5.0  # 每5秒检查一次完成条件
+fsm/min_consecutive_no_frontier: 3  # 连续3次NO_FRONTIER即停止
+fsm/min_viewpoint_quality_threshold: 0.5  # 视点质量阈值（保留用于扩展）
+
+# 安全退出参数
+fsm/enable_safe_exit: true
+fsm/safe_exit_delay: 10.0  # 进入FINISH状态后10秒自动退出进程
+
 global_planning/w_vdir: 1.0
 global_planning/w_yawdir: 0.0
 global_planning/w_firstnode: 0.2

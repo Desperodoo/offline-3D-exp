@@ -63,8 +63,11 @@ void FastExplorationManager::initialize(
   
   // 初始化拓扑图提取器
   ROS_INFO("Initializing TopoExtractorIntegrated...");
-  std::string topo_export_dir = "/home/amax/EPIC/topo_outputs";
+  std::string topo_export_dir;
   bool debug_output = false;
+  
+  // 从ROS参数读取导出目录，默认使用EPIC项目下的topo_outputs目录
+  nh.param("topo_extraction/export_dir", topo_export_dir, std::string("/home/amax/EPIC/topo_outputs"));
   nh.param("topo_extraction/debug_output", debug_output, false);
   
   topo_extractor_ = std::make_shared<TopoExtractorIntegrated>(
@@ -172,24 +175,26 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
   };
   ros::Time start = ros::Time::now();
   vector<TopoNode::Ptr> viewpoints;
+  vector<ViewpointBenefit> viewpoint_benefits; // 收集视点收益信息
   frontier_manager_ptr_->generateTSPViewpoints(
-      planner_manager_->topo_graph_->odom_node_->center_, viewpoints);
+      planner_manager_->topo_graph_->odom_node_->center_, viewpoints, &viewpoint_benefits);
 
   if (viewpoints.empty()) {
     planner_manager_->graph_visualizer_->vizTour({}, VizColor::RED, "global");
+    // 第一种情况：没有视点，保存拓扑图并更新探索统计
+    if (topo_extractor_) {
+      ROS_INFO("No viewpoints found - extracting final topo graph");
+      topo_extractor_->extractTopoGraph("planGlobalPath_no_viewpoints");
+    }
+    // 更新探索统计 - 没有可达视点
+    if (exploration_stats_) {
+      exploration_stats_->updateViewpointCount(0);
+    }
     return NO_FRONTIER;
   }
 
   ros::Time t1 = ros::Time::now();
   planner_manager_->topo_graph_->insertNodes(viewpoints, false);
-  
-  // 直接调用拓扑图提取器捕获视点
-  if (topo_extractor_) {
-    ROS_INFO("Extracting topo graph to capture %zu viewpoints", viewpoints.size());
-    topo_extractor_->extractTopoGraph("planGlobalPath_viewpoints");
-  } else {
-    ROS_WARN("TopoExtractor not initialized, skipping extraction");
-  }
   
   // 更新探索统计 - 估算探索面积
   if (exploration_stats_) {
@@ -292,6 +297,15 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
   if (viewpoint_reachable.empty()) {
     planner_manager_->topo_graph_->removeNodes(viewpoints);
     planner_manager_->graph_visualizer_->vizTour({}, VizColor::RED, "global");
+    // 第二种情况：有视点但都不可达，在移除视点之后保存拓扑图并更新探索统计
+    if (topo_extractor_) {
+      ROS_INFO("No reachable viewpoints - extracting topo graph after cleanup");
+      topo_extractor_->extractTopoGraph("planGlobalPath_no_reachable");
+    }
+    // 更新探索统计 - 没有可达视点
+    if (exploration_stats_) {
+      exploration_stats_->updateViewpointCount(0);
+    }
     return NO_FRONTIER;
   }
 
@@ -300,6 +314,17 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
     ed_->global_tour_.emplace_back(pos.cast<float>());
     ed_->global_tour_.emplace_back(viewpoint_reachable.front()->center_);
     planner_manager_->local_data_.end_yaw_ = viewpoint_reachable.front()->yaw_;
+    
+    // 第三种情况：只有一个可达视点，在移除视点之前保存拓扑图并更新探索统计
+    if (topo_extractor_) {
+      ROS_INFO("Single reachable viewpoint - extracting topo graph before cleanup");
+      topo_extractor_->extractTopoGraph("planGlobalPath_single_viewpoint");
+    }
+    // 更新探索统计 - 只有一个可达视点
+    if (exploration_stats_) {
+      exploration_stats_->updateViewpointCount(1);
+    }
+    
     planner_manager_->topo_graph_->removeNodes(viewpoints);
     return SUCCEED;
   }
@@ -360,13 +385,15 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
   if (!last_goal_reachable)
     last_frame_value = viewpoint_reachable_distance[indices[1]];
 
-  // 更新拓扑提取器的viewpoint信息
+  // 更新拓扑提取器的viewpoint信息（简化版本）
   if (topo_extractor_) {
-    ROS_INFO("Updating viewpoint info: %zu reachable, TSP order size: %zu", 
-             viewpoint_reachable.size(), indices.size());
+    ROS_INFO("Updating viewpoint info: %zu reachable, TSP order size: %zu, benefits: %zu", 
+             viewpoint_reachable.size(), indices.size(), viewpoint_benefits.size());
+    
     topo_extractor_->updateViewpointInfo(viewpoint_reachable, 
                                         viewpoint_reachable_distance2, 
-                                        indices);
+                                        indices,
+                                        viewpoint_benefits);
     
     // 重新提取拓扑图以包含更新的viewpoint信息和当前的探索统计
     topo_extractor_->extractTopoGraph("planGlobalPath_final");

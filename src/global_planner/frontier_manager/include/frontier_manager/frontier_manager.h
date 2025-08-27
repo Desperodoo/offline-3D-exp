@@ -188,6 +188,17 @@ struct ClusterInfo {
   // bbox
   Eigen::Vector3f box_max_;
   Eigen::Vector3f box_min_;
+  
+  // 收益信息（从selectBestViewpoint计算得出）
+  float observation_score_ = 0.0;  // 观测得分
+};
+
+// 视点收益信息结构
+struct ViewpointBenefit {
+  TopoNode::Ptr viewpoint;
+  double observation_score;  // 从selectBestViewpoint获得的观测得分
+  double cluster_distance;   // 集群距离成本
+  bool is_reachable;         // 是否可达
 };
 
 struct SuperClusterInfo {
@@ -276,5 +287,6 @@ public:
   void updateFrontierClusters(vector<ClusterInfo::Ptr> &cluster_updated,
                               vector<int> &cluster_removed);
   void generateTSPViewpoints(Eigen::Vector3f &center_pose,
-                             vector<TopoNode::Ptr> &viewpoints);
+                             vector<TopoNode::Ptr> &viewpoints,
+                             vector<ViewpointBenefit> *viewpoint_benefits = nullptr);
 };

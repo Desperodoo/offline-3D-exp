@@ -28,6 +28,16 @@ struct FSMData {
   // 自动开始探索相关状态
   ros::Time system_start_time_;
   bool auto_start_triggered_;
+  
+  // 自动停止探索相关状态
+  ros::Time exploration_start_time_;
+  ros::Time last_completion_check_time_;
+  bool exploration_timeout_;
+  bool exploration_completed_;
+  
+  // 安全退出相关状态
+  ros::Time finish_state_enter_time_;
+  bool safe_exit_initiated_;
 };
 
 struct FSMParam {
@@ -42,6 +52,15 @@ struct FSMParam {
   bool enable_auto_start_;
   double auto_start_delay_;
   string auto_start_condition_;
+  
+  // 自动停止探索参数
+  bool enable_auto_stop_;
+  double max_exploration_time_;
+  double completion_check_interval_;
+  
+  // 安全退出参数
+  bool enable_safe_exit_;
+  double safe_exit_delay_;  // 进入FINISH状态后多久退出进程
 };
 
 struct ExplorationData {
