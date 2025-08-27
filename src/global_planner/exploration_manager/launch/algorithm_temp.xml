@@ -1,6 +1,6 @@
 <launch>
 	<!-- main node -->
-	<arg name="config_file" default="partition.yaml"/>
+	<arg name="config_file" default="forest.yaml"/>
 	
 	<node pkg="epic_planner" name="exploration_node" type="exploration_node"
 		output="screen">
@@ -21,7 +21,7 @@
 		
 		<!-- 拓扑图提取配置 -->
 		<param name="topo_extraction/enable" value="true" type="bool" />
-		<param name="topo_extraction/export_dir" value="/home/amax/EPIC/collected_data/partition_batch_10_9_20250827_102842/raw_data" type="string" />
+		<param name="topo_extraction/export_dir" value="/home/amax/EPIC/collected_data/forest_batch_5_4_20250827_191449/raw_data" type="string" />
 		<param name="topo_extraction/debug_output" value="false" type="bool" />
 		
 		<!-- 探索统计配置 -->
