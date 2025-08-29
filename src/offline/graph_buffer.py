@@ -44,8 +44,8 @@ class EfficientGraphReplayBuffer(GraphReplayBuffer):
                  buffer_size: int, 
                  batch_size: int,
                  node_dim: int,
-                 node_padding_size: int,
-                 viewpoint_padding_size: int,
+                 max_nodes: int,
+                 max_viewpoints: int,
                  k_size: int,
                  discount: float = 0.99,
                  nstep: int = 1,
@@ -57,8 +57,8 @@ class EfficientGraphReplayBuffer(GraphReplayBuffer):
             buffer_size: 缓冲区大小
             batch_size: 批量大小
             node_dim: 节点特征维度
-            node_padding_size: 节点填充大小
-            viewpoint_padding_size: 视点填充大小
+            max_nodes: 节点填充大小
+            max_viewpoints: 视点填充大小
             k_size: 邻接矩阵k近邻大小
             discount: 折扣因子
             nstep: n步回报的n值
@@ -67,8 +67,8 @@ class EfficientGraphReplayBuffer(GraphReplayBuffer):
         self.buffer_size = buffer_size
         self.batch_size = batch_size
         self.node_dim = node_dim
-        self.node_padding_size = node_padding_size
-        self.viewpoint_padding_size = viewpoint_padding_size
+        self.max_nodes = max_nodes
+        self.max_viewpoints = max_viewpoints
         self.k_size = k_size
         self.discount = discount
         self.nstep = nstep
@@ -89,12 +89,12 @@ class EfficientGraphReplayBuffer(GraphReplayBuffer):
     def _initialize_buffer(self):
         """初始化缓冲区存储空间，与worker_vec中的结构一致"""
         # 图结构数据存储
-        self.node_inputs = np.zeros((self.buffer_size, self.node_padding_size, self.node_dim), dtype=np.float32)
-        self.node_padding_mask = np.zeros((self.buffer_size, 1, self.node_padding_size), dtype=np.bool_)
+        self.node_inputs = np.zeros((self.buffer_size, self.max_nodes, self.node_dim), dtype=np.float32)
+        self.node_padding_mask = np.zeros((self.buffer_size, 1, self.max_nodes), dtype=np.bool_)
         self.current_index = np.zeros((self.buffer_size, 1, 1), dtype=np.int64)
-        self.viewpoints = np.zeros((self.buffer_size, self.viewpoint_padding_size, 1), dtype=np.float32)
-        self.viewpoint_padding_mask = np.zeros((self.buffer_size, 1, self.viewpoint_padding_size), dtype=np.bool_)
-        self.adj_list = np.zeros((self.buffer_size, self.node_padding_size, self.k_size), dtype=np.int64)
+        self.viewpoints = np.zeros((self.buffer_size, self.max_viewpoints, 1), dtype=np.float32)
+        self.viewpoint_padding_mask = np.zeros((self.buffer_size, 1, self.max_viewpoints), dtype=np.bool_)
+        self.adj_list = np.zeros((self.buffer_size, self.max_nodes, self.k_size), dtype=np.int64)
         
         # 动作、奖励和其他RL数据
         # self.logp = np.zeros(self.buffer_size, dtype=np.float32)
@@ -164,26 +164,78 @@ class EfficientGraphReplayBuffer(GraphReplayBuffer):
         # 从有效样本中随机选择索引
         if np.sum(self.valid) == 0:
             raise ValueError("No valid transitions in buffer yet")
+        
+        # 采样更多的数据以确保有足够的有效样本
+        oversample_factor = 1.5  # 过采样因子
+        candidate_size = min(int(batch_size * oversample_factor), np.sum(self.valid))
+        candidate_indices = np.random.choice(np.where(self.valid)[0], size=candidate_size, replace=False)
+        
+        # 预计算有效性检查
+        viewpoint_masks = self.viewpoint_padding_mask[candidate_indices]  # [candidate_size, 1, max_vps]
+        actions = self.actions[candidate_indices]  # [candidate_size]
+        
+        # 计算有效视点数量
+        valid_vps_per_sample = (~viewpoint_masks.squeeze(1)).sum(axis=1)  # [candidate_size]
+        
+        # 过滤有效样本：action < valid_vps 且 valid_vps > 0
+        valid_sample_mask = (actions < valid_vps_per_sample) & (valid_vps_per_sample > 0)
+        valid_indices = candidate_indices[valid_sample_mask]
+        
+        # 如果有效样本不够，继续采样直到满足要求或达到上限
+        max_attempts = 5
+        attempt = 0
+        while len(valid_indices) < batch_size and attempt < max_attempts:
+            attempt += 1
+            additional_size = min(batch_size * 2, np.sum(self.valid) - len(valid_indices))
+            if additional_size <= 0:
+                break
+                
+            # 排除已选择的索引
+            remaining_valid = np.setdiff1d(np.where(self.valid)[0], candidate_indices)
+            if len(remaining_valid) == 0:
+                break
+                
+            additional_indices = np.random.choice(remaining_valid, 
+                                                size=min(additional_size, len(remaining_valid)), 
+                                                replace=False)
             
-        indices = np.random.choice(np.where(self.valid)[0], size=batch_size)
+            # 检查新索引的有效性
+            additional_masks = self.viewpoint_padding_mask[additional_indices]
+            additional_actions = self.actions[additional_indices]
+            additional_valid_vps = (~additional_masks.squeeze(1)).sum(axis=1)
+            additional_valid_mask = (additional_actions < additional_valid_vps) & (additional_valid_vps > 0)
+            
+            # 合并有效索引
+            valid_indices = np.concatenate([valid_indices, additional_indices[additional_valid_mask]])
+            candidate_indices = np.concatenate([candidate_indices, additional_indices])
+        
+        # 如果有效样本仍然不够，使用现有的有效样本
+        if len(valid_indices) < batch_size:
+            print(f"⚠️ 警告: 只找到 {len(valid_indices)} 个有效样本，少于请求的 {batch_size} 个")
+        
+        # 限制到请求的batch_size
+        final_indices = valid_indices[:batch_size] if len(valid_indices) >= batch_size else valid_indices
+        actual_batch_size = len(final_indices)
+        
+        if actual_batch_size == 0:
+            raise ValueError("没有找到有效的样本进行训练")
         
         # 采样当前状态数据
-        node_inputs = torch.FloatTensor(self.node_inputs[indices]).to(self.device)
-        node_padding_mask = torch.BoolTensor(self.node_padding_mask[indices]).to(self.device)
-        current_index = torch.LongTensor(self.current_index[indices]).to(self.device)
-        viewpoints = torch.FloatTensor(self.viewpoints[indices]).to(self.device)
-        viewpoint_padding_mask = torch.BoolTensor(self.viewpoint_padding_mask[indices]).to(self.device)
-        adj_list = torch.LongTensor(self.adj_list[indices]).to(self.device)
+        node_inputs = torch.FloatTensor(self.node_inputs[final_indices]).to(self.device)
+        node_padding_mask = torch.BoolTensor(self.node_padding_mask[final_indices]).to(self.device)
+        current_index = torch.LongTensor(self.current_index[final_indices]).to(self.device)
+        viewpoints = torch.FloatTensor(self.viewpoints[final_indices]).to(self.device)
+        viewpoint_padding_mask = torch.BoolTensor(self.viewpoint_padding_mask[final_indices]).to(self.device)
+        adj_list = torch.LongTensor(self.adj_list[final_indices]).to(self.device)
         
         # 采样动作和奖励数据
-        actions = torch.LongTensor(self.actions[indices]).to(self.device)
-        # logp = torch.FloatTensor(self.logp[indices]).to(self.device)
-        rewards = torch.FloatTensor(self.rewards[indices]).to(self.device)
-        dones = torch.BoolTensor(self.dones[indices]).to(self.device)
+        actions = torch.LongTensor(self.actions[final_indices]).to(self.device)
+        rewards = torch.FloatTensor(self.rewards[final_indices]).to(self.device)
+        dones = torch.BoolTensor(self.dones[final_indices]).to(self.device)
         
         # 采样下一个状态数据（考虑n步）
-        next_indices = (indices + self.nstep) % self.buffer_size
-        valid_next = ~self.dones[indices]  # 只在非终止状态采样下一个状态
+        next_indices = (final_indices + self.nstep) % self.buffer_size
+        valid_next = ~self.dones[final_indices]  # 只在非终止状态采样下一个状态
         
         next_node_inputs = torch.FloatTensor(self.node_inputs[next_indices]).to(self.device)
         next_node_padding_mask = torch.BoolTensor(self.node_padding_mask[next_indices]).to(self.device)
@@ -192,11 +244,9 @@ class EfficientGraphReplayBuffer(GraphReplayBuffer):
         next_viewpoint_padding_mask = torch.BoolTensor(self.viewpoint_padding_mask[next_indices]).to(self.device)
         next_adj_list = torch.LongTensor(self.adj_list[next_indices]).to(self.device)
         
-        # 关键修改：添加next_actions支持，修复数据类型问题
         # 获取下一步的动作（用于离线RL中的数据集动作）
         next_actions = torch.LongTensor(self.actions[next_indices]).to(self.device)
-        # 对于终止状态，next_actions设为-1或当前动作（避免使用无效动作）
-        # 修复：将valid_next转换为张量以匹配torch.where的要求
+        # 对于终止状态，next_actions使用当前动作（避免使用无效动作）
         valid_next_tensor = torch.BoolTensor(valid_next).to(self.device)
         next_actions = torch.where(valid_next_tensor, next_actions, actions)
         
@@ -212,7 +262,6 @@ class EfficientGraphReplayBuffer(GraphReplayBuffer):
             
             # 动作和奖励
             'actions': actions,
-            # 'logp': logp,
             'rewards': rewards,
             'dones': dones,
             
@@ -224,12 +273,16 @@ class EfficientGraphReplayBuffer(GraphReplayBuffer):
             'next_viewpoint_padding_mask': next_viewpoint_padding_mask,
             'next_adj_list': next_adj_list,
             
-            # 关键新增：下一步动作（用于离线RL数据集动作）
+            # 下一步动作（用于离线RL数据集动作）
             'next_actions': next_actions,
             
             # 有效掩码
             'valid_mask': torch.BoolTensor(valid_next).to(self.device)
         }
+        
+        # 简化的数据健康检查
+        if torch.isnan(node_inputs).any() or torch.isnan(rewards).any():
+            print("❌ 发现NaN值，可能导致训练不稳定")
         
         return batch
         
@@ -285,14 +338,14 @@ class MergedGraphReplayBuffer(EfficientGraphReplayBuffer):
                 total_samples += sample_count
                 # 获取数据维度
                 node_dim = f['node_inputs'].shape[-1]
-                node_padding_size = f['node_inputs'].shape[1]
-                viewpoint_padding_size = f['viewpoints'].shape[1]
+                max_nodes = f['node_inputs'].shape[1]
+                max_viewpoints = f['viewpoints'].shape[1]
                 k_size = f['adj_list'].shape[-1]
                 discount = f.attrs.get('discount', 0.99)
                 if verbose:
                     if i == 0:
-                        print(f"数据维度: 节点特征={node_dim}, 节点数={node_padding_size}, "
-                            f"视点数={viewpoint_padding_size}, K近邻={k_size}")
+                        print(f"数据维度: 节点特征={node_dim}, 节点数={max_nodes}, "
+                            f"视点数={max_viewpoints}, K近邻={k_size}")
 
                     print(f"文件 {file_name}: {sample_count} 个样本")
         
@@ -307,8 +360,8 @@ class MergedGraphReplayBuffer(EfficientGraphReplayBuffer):
             buffer_size=total_samples,
             batch_size=batch_size,
             node_dim=node_dim,
-            node_padding_size=node_padding_size,
-            viewpoint_padding_size=viewpoint_padding_size,
+            max_nodes=max_nodes,
+            max_viewpoints=max_viewpoints,
             k_size=k_size,
             discount=discount,
             device=device

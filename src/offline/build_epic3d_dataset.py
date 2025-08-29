@@ -87,7 +87,7 @@ Examples:
   python build_epic3d_dataset.py \\
       --data_dirs /home/amax/EPIC/collected_data \\
       --output /tmp/epic3d_dataset.h5 \\
-      --config epic3d_rl_config.yaml
+      --config config.yaml
 
   # 构建多个数据目录的数据集
   python build_epic3d_dataset.py \\

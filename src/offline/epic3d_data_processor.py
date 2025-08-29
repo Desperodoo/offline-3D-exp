@@ -8,11 +8,11 @@ EPIC 3D数据处理模块
 import os
 import glob
 import numpy as np
-import torch
 import h5py
 from typing import List, Dict, Tuple, Optional
 from pathlib import Path
 import logging
+from datetime import datetime
 from collections import defaultdict, namedtuple
 import re
 import time
@@ -411,7 +411,7 @@ class EPIC3DEpisodeProcessor:
         node_padding_mask = np.ones((episode_length, 1, max_nodes), dtype=bool)  # True = padding
         current_index = np.zeros((episode_length, 1, 1), dtype=np.int64)
         viewpoint_indices = np.zeros((episode_length, max_viewpoints, 1), dtype=np.float32)
-        viewpoint_padding_mask = np.ones((episode_length, 1, max_viewpoints), dtype=bool)
+        viewpoint_padding_mask = np.ones((episode_length, 1, max_viewpoints), dtype=bool)  # True = padding
         adj_list = np.full((episode_length, max_nodes, k_size), -1, dtype=np.int64)
         
         for t, time_step in enumerate(time_steps):
@@ -523,19 +523,104 @@ class EPIC3DEpisodeProcessor:
         return actions
     
     def _infer_action_from_tsp_order(self, time_step: EPIC3DTimeStep) -> int:
-        """通过TSP顺序推断动作索引"""
+        """
+        通过TSP顺序推断动作索引
+        
+        重要修复：必须与_build_state_sequence中的viewpoint_nodes构建逻辑完全一致
+        特别是要考虑max_viewpoints的限制！
+        
+        Args:
+            time_step: 当前时间步数据
+            
+        Returns:
+            int: 动作索引（0-based，在有限的viewpoint_nodes数组中的位置）
+        """
+        nodes = time_step.nodes
         viewpoints = time_step.viewpoints
-        if not viewpoints:
+        
+        if not nodes or not viewpoints:
             return 0
         
-        # 查找tsp_order_index = 1的视点作为下一个目标(动作)
-        for i, vp in enumerate(viewpoints):
-            if vp.get('tsp_order_index') == 1:
-                return i
+        # Step 1: 构建viewpoint_nodes数组（与_build_state_sequence中的逻辑完全一致）
+        max_nodes = self.config.get('max_nodes', 500)
+        max_viewpoints = self.config.get('max_viewpoints', 100)
         
-        # 如果没有找到tsp_order_index = 1的视点，返回第一个可达视点
-        reachable_viewpoints = [i for i, vp in enumerate(viewpoints) if vp.get('is_reachable', False)]
-        return reachable_viewpoints[0] if reachable_viewpoints else 0
+        # 限制节点数量（与_build_state_sequence一致）
+        num_nodes = min(len(nodes), max_nodes)
+        
+        # 构建完整的viewpoint_nodes列表
+        full_viewpoint_nodes = []
+        for i, node in enumerate(nodes[:num_nodes]):
+            if node.get('is_viewpoint', False):
+                full_viewpoint_nodes.append(i)
+        
+        # 应用max_viewpoints限制（关键修复！）
+        viewpoint_nodes = full_viewpoint_nodes[:max_viewpoints]
+        
+        if not viewpoint_nodes:
+            return 0
+        
+        # Step 2: 找到tsp_order_index=1的目标视点
+        target_viewpoint = None
+        for vp in viewpoints:
+            if vp.get('tsp_order_index') == 1:  # tsp_order=1是下一个要访问的视点
+                target_viewpoint = vp
+                break
+        
+        # 如果没有找到tsp_order=1，选择tsp_order最小的非零视点
+        if target_viewpoint is None:
+            min_tsp_order = float('inf')
+            for vp in viewpoints:
+                tsp_order = vp.get('tsp_order_index', float('inf'))
+                if 0 < tsp_order < min_tsp_order:  # 排除tsp_order=0（当前位置）
+                    min_tsp_order = tsp_order
+                    target_viewpoint = vp
+        
+        if target_viewpoint is None:
+            return 0
+        
+        # Step 3: 找到目标视点对应的节点索引
+        target_node_idx = None
+        
+        # 方法1: 通过node_id匹配
+        target_node_id = target_viewpoint.get('node_id')
+        if target_node_id is not None:
+            for i, node in enumerate(nodes[:num_nodes]):  # 也要限制搜索范围
+                if node.get('node_id') == target_node_id or node.get('id') == target_node_id:
+                    target_node_idx = i
+                    break
+        
+        # 方法2: 如果node_id匹配失败，通过坐标匹配
+        if target_node_idx is None:
+            target_coords = (target_viewpoint.get('x', 0), target_viewpoint.get('y', 0), target_viewpoint.get('z', 0))
+            for i, node in enumerate(nodes[:num_nodes]):  # 也要限制搜索范围
+                node_pos = node.get('position', [0, 0, 0])
+                if len(node_pos) >= 3:
+                    if (abs(node_pos[0] - target_coords[0]) < 1e-6 and
+                        abs(node_pos[1] - target_coords[1]) < 1e-6 and
+                        abs(node_pos[2] - target_coords[2]) < 1e-6):
+                        target_node_idx = i
+                        break
+        
+        if target_node_idx is None:
+            return 0
+        
+        # Step 4: 在有限的viewpoint_nodes中找到target_node_idx的位置
+        try:
+            action_idx = viewpoint_nodes.index(target_node_idx)
+            
+            # 验证action_idx的有效性（应该总是有效的）
+            if 0 <= action_idx < len(viewpoint_nodes):
+                return action_idx
+            else:
+                self.logger.warning(f"计算的action_idx={action_idx}超出有效范围[0, {len(viewpoint_nodes)})")
+                return 0
+        except ValueError:
+            # 如果目标节点不在有限的viewpoint_nodes中
+            # 这种情况下，目标视点被max_viewpoints截断了，返回最后一个有效位置
+            self.logger.warning(f"目标节点{target_node_idx}不在有限的viewpoint_nodes中: {viewpoint_nodes}")
+            self.logger.warning(f"目标节点可能在位置{full_viewpoint_nodes.index(target_node_idx) if target_node_idx in full_viewpoint_nodes else 'unknown'}，被max_viewpoints={max_viewpoints}截断")
+            return len(viewpoint_nodes) - 1 if viewpoint_nodes else 0
     
     def _build_reward_sequence(self, time_steps: List[EPIC3DTimeStep]) -> np.ndarray:
         """
@@ -606,7 +691,7 @@ class EPIC3DDatasetBuilder:
     
     def build_dataset_from_directories(self, data_dirs: List[str], output_path: str) -> str:
         """
-        从多个episode目录构建数据集
+        从多个episode目录构建数据集，每处理完一个episode就立即保存
         
         Args:
             data_dirs: 数据目录列表
@@ -615,7 +700,13 @@ class EPIC3DDatasetBuilder:
         Returns:
             str: 输出文件路径
         """
-        all_episodes = []
+        # 确保输出目录存在
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        batch_files = []
+        processed_episodes_metadata = []
+        episode_count = 0
+        base_path = output_path.replace('.h5', '')
         
         for data_dir in data_dirs:
             if not os.path.exists(data_dir):
@@ -632,7 +723,17 @@ class EPIC3DDatasetBuilder:
                     
                     # 检查episode是否完整（process_episode_directory可能返回None）
                     if episode_data is not None:
-                        all_episodes.append(episode_data)
+                        episode_count += 1
+                        
+                        # 立即保存这个episode为单独的批次文件
+                        batch_file_path = f"{base_path}_batch_{episode_count}.h5"
+                        self._save_single_episode_batch(episode_data, batch_file_path)
+                        batch_files.append(batch_file_path)
+                        
+                        # 只保留元数据，释放大数据对象
+                        processed_episodes_metadata.append(episode_data['metadata'])
+                        
+                        self.logger.info(f"✅ Episode已保存: {batch_file_path}")
                         self.logger.info(f"Successfully processed episode: {episode_dir}")
                     else:
                         self.logger.warning(f"Episode discarded due to incompleteness: {episode_dir}")
@@ -641,15 +742,49 @@ class EPIC3DDatasetBuilder:
                     self.logger.error(f"Failed to process {episode_dir}: {e}")
                     continue
         
-        if not all_episodes:
+        if not batch_files:
             raise ValueError("No valid episodes found in provided directories")
         
-        self.logger.info(f"Processed {len(all_episodes)} episodes total")
+        self.logger.info(f"Processed {len(batch_files)} episodes total")
+        self.logger.info(f"数据集已保存为 {len(batch_files)} 个批次文件")
+        for i, batch_file in enumerate(batch_files):
+            self.logger.info(f"批次 {i+1}: {batch_file}")
         
-        # 保存为HDF5格式
-        self._save_to_hdf5(all_episodes, output_path)
+        # 最后保存合并格式索引文件（只包含元数据和批次文件引用）
+        self._save_merged_index_file(processed_episodes_metadata, output_path, batch_files)
         
         return output_path
+
+    def _save_single_episode_batch(self, episode_data: Dict, batch_file_path: str):
+        """立即保存单个episode为批次文件"""
+        states = episode_data['states']
+        
+        # 转换为buffer兼容格式 - 处理维度重塑
+        buffer_data = self._convert_to_buffer_format(states, episode_data)
+        
+        # 保存为独立批次文件
+        self._save_single_batch_file(batch_file_path, buffer_data, episode_data['metadata'])
+        
+    def _save_merged_index_file(self, episodes_metadata: List[Dict], output_path: str, batch_files: List[str]):
+        """保存合并索引文件，包含元数据和批次文件引用"""
+        with h5py.File(output_path, 'w') as f:
+            # 保存批次文件列表
+            batch_file_names = [os.path.basename(bf) for bf in batch_files]
+            f.create_dataset('batch_files', data=[s.encode('utf-8') for s in batch_file_names])
+            
+            # 保存总体统计信息
+            f.attrs['total_episodes'] = len(episodes_metadata)
+            f.attrs['total_batch_files'] = len(batch_files)
+            f.attrs['format_version'] = 'epic3d_indexed_batches'
+            
+            # 保存episode元数据
+            episode_info = []
+            for i, metadata in enumerate(episodes_metadata):
+                episode_info.append(f"Episode_{i+1}: {metadata}")
+            
+            f.create_dataset('episode_metadata', data=[str(info).encode('utf-8') for info in episode_info])
+            
+            self.logger.info(f"合并索引文件已保存: {output_path}")
     
     def _find_episode_directories(self, data_dir: str) -> List[str]:
         """查找episode目录"""

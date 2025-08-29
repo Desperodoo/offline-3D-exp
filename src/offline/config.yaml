@@ -1,0 +1,35 @@
+# EPIC 3D离线强化学习配置文件
+
+# 数据处理配置
+data_processing:
+  # 图结构参数
+  max_nodes: 2500                    # 最大节点数（用于padding）
+  max_viewpoints: 25               # 最大视点数（用于padding）
+  k_size: 20                       # 邻接表K近邻大小
+  node_feature_dim: 9              # 节点特征维度
+  
+  # 特征标准化参数
+  position_scale: 100.0            # 位置坐标标准化尺度（除以此值）
+  observation_score_scale: 50.0    # 观测得分标准化尺度
+  cluster_distance_scale: 20.0     # 集群距离标准化尺度
+  distance_scale: 50.0             # 距离特征标准化尺度
+  
+  # 数据过滤参数
+  min_episode_length: 10           # 最小episode长度
+  max_episode_length: 1000         # 最大episode长度
+  
+  # 奖励函数参数
+  distance_penalty_scale: 0.05           # 距离惩罚系数
+  
+# 数据集配置
+dataset:
+  # 数据集保存选项
+  compression: 'gzip'              # HDF5压缩方式
+  compression_level: 6             # 压缩级别 (0-9)
+  shuffle_data: true               # 是否打乱数据顺序
+  
+  # 数据质量控制
+  remove_duplicate_states: true    # 移除重复状态
+  normalize_rewards: false         # 是否标准化奖励
+  clip_rewards: false             # 是否裁剪奖励
+  reward_clip_range: [-10.0, 10.0] # 奖励裁剪范围

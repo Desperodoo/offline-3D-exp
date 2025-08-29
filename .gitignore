@@ -6,3 +6,7 @@ misc/
 topo_outputs/
 collected_data/
 src/MARSIM/map_generator/resource/
+datasets*/
+duplicated/
+src/offline/results/
+src/offline/wandb/
