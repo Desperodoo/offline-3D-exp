@@ -203,7 +203,7 @@ void cmdCallback(const ros::TimerEvent &e) {
 
   ros::Time time_now = ros::Time::now();
   static bool printed;
-  if ((time_now - heartbeat_time_).toSec() > 0.5) {
+  if ((time_now - heartbeat_time_).toSec() > 2.5) {
     if (!printed) {
       ROS_ERROR("[traj_server] Lost heartbeat from the planner, is it dead?");
       printed = true;

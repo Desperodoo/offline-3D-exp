@@ -1,10 +1,19 @@
 <launch>
 	<!-- main node -->
 	<arg name="config_file" default="cave2.yaml"/>
+	<!-- 神经网络TSP配置 - 统一配置入口 -->
+	<arg name="use_neural_tsp" default="false" />
 	
 	<node pkg="epic_planner" name="exploration_node" type="exploration_node"
 		output="screen">
 		<rosparam file="$(find epic_planner)/config/$(arg config_file)" command="load" />
+		
+		<!-- 神经网络TSP配置 - 直接设置ROS参数 -->
+		<param name="neural_tsp/use_neural_tsp" value="$(arg use_neural_tsp)" type="bool" />
+		
+		<!-- 重映射neural TSP服务到全局命名空间 -->
+		<remap from="neural_tsp_solve" to="/neural_tsp_solve" />
+		
 		<!-- Fsm -->
 		<param name="fsm/thresh_replan" value="0.5" type="double" />
 		<param name="fsm/emergency_replan_control_error" value="1.5" type="double" />
@@ -32,4 +41,13 @@
 		<param name="exploration_stats/distance_threshold" value="0.002" type="double" />
 		<param name="exploration_stats/area_resolution" value="0.5" type="double" />
 	</node>
+	
+	<!-- 神经网络TSP服务 (条件启动) -->
+	<group if="$(arg use_neural_tsp)">
+		<node pkg="epic_offline" name="neural_tsp_server" type="neural_tsp_server.py" 
+			output="screen" respawn="true">
+			<!-- 服务名称重映射：将全局服务映射到exploration_node命名空间 -->
+			<remap from="neural_tsp_solve" to="/exploration_node/neural_tsp_solve" />
+		</node>
+	</group>
 </launch>

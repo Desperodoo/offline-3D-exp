@@ -13,6 +13,7 @@
 #include <Eigen/Eigen>
 #include <epic_planner/topo_graph_integrated_extractor.h>
 #include <epic_planner/exploration_statistics.h>
+#include <epic_planner/NeuralTSP.h>
 #include <frontier_manager/frontier_manager.h>
 #include <memory>
 #include <omp.h>
@@ -55,6 +56,10 @@ public:
   // 探索统计模块
   ExplorationStatistics::Ptr exploration_stats_;
   
+  // 神经网络TSP服务客户端
+  ros::ServiceClient neural_tsp_client_;
+  bool use_neural_tsp_;  // 是否使用神经网络TSP
+  
   double getPathCost(TopoNode::Ptr &n1, Eigen::Vector3d v1, float &yaw1, TopoNode::Ptr &n2, float &yaw2);
   double getPathCostWithoutTopo(TopoNode::Ptr &n1, Eigen::Vector3d v1, float &yaw1, TopoNode::Ptr &n2, float &yaw2);
   void initialize(ros::NodeHandle &nh, FrontierManager::Ptr frt_manager,
@@ -69,6 +74,8 @@ public:
   }
   int planGlobalPath(const Vector3d &pos, const Vector3d &vel);
   void solveLHK(Eigen::MatrixXd &cost_mat, vector<int> &indices);
+  int solveNeuralTSP(const vector<TopoNode::Ptr> &viewpoint_reachable, 
+                     const Eigen::Vector3d &current_pos);  // 新增神经网络TSP求解
 
   void surfaceFrtCalllback(const ros::TimerEvent &e);
   void goalCallback(const geometry_msgs::PoseStampedConstPtr &msg);

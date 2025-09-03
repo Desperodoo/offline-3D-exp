@@ -1,10 +1,13 @@
 <launch>
   <arg name="map_name" value="cave" />
-
   <arg name="config_file" default="$(arg map_name).yaml" />
+  
+  <!-- 神经网络TSP配置 - 可以通过launch参数控制 -->
+  <arg name="use_neural_tsp" default="false" />
 
   <include file="$(find epic_planner)/launch/algorithm.xml">
     <arg name="config_file" value="$(arg config_file)" />
+    <arg name="use_neural_tsp" value="$(arg use_neural_tsp)" />
   </include>
   <node pkg="plan_manage" name="traj_server" type="traj_server" output="screen">
     <remap from="/position_cmd" to="/planning/pos_cmd" />

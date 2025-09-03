@@ -1,12 +1,28 @@
 # EPIC 3D离线强化学习配置文件
 
+# 算法选择
+algorithm: "ddql"
+
+# 模型路径配置
+model_path: "/home/amax/EPIC/src/offline/results/ddql_fixed_dataset/models_1756829979/epic3d-pointer-924b5311/checkpoint_20300.pt"
+
+# DDQL算法配置
+ddql:
+  T: 10                           # 扩散步数（与训练时一致）
+  use_fixed_actions: false        # 是否使用固定动作
+  temperature: 1.0                # 温度参数
+
+# 模型架构配置
+model:
+  embed_dim: 64                   # 嵌入维度（与训练时一致）
+
 # 数据处理配置
 data_processing:
   # 图结构参数
   max_nodes: 2500                    # 最大节点数（用于padding）
   max_viewpoints: 25               # 最大视点数（用于padding）
   k_size: 20                       # 邻接表K近邻大小
-  node_feature_dim: 9              # 节点特征维度
+  node_feature_dim: 6              # 节点特征维度
   
   # 特征标准化参数
   position_scale: 100.0            # 位置坐标标准化尺度（除以此值）
@@ -18,18 +34,9 @@ data_processing:
   min_episode_length: 10           # 最小episode长度
   max_episode_length: 1000         # 最大episode长度
   
-  # 奖励函数参数
-  distance_penalty_scale: 0.05           # 距离惩罚系数
-  
 # 数据集配置
 dataset:
   # 数据集保存选项
   compression: 'gzip'              # HDF5压缩方式
   compression_level: 6             # 压缩级别 (0-9)
   shuffle_data: true               # 是否打乱数据顺序
-  
-  # 数据质量控制
-  remove_duplicate_states: true    # 移除重复状态
-  normalize_rewards: false         # 是否标准化奖励
-  clip_rewards: false             # 是否裁剪奖励
-  reward_clip_range: [-10.0, 10.0] # 奖励裁剪范围

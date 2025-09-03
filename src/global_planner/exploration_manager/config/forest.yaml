@@ -21,7 +21,8 @@ fsm/safe_exit_delay: 10.0  # 进入FINISH状态后10秒自动退出进程
 global_planning/w_vdir: 1.0
 global_planning/w_yawdir: 0.0
 global_planning/w_firstnode: 0.2
-#viz
+
+# Visualization debugging has high overhead and is not recommended to be enabled.
 view_graph: true
 FrontierManager/view_cluster: false
 FrontierManager/view_frt: true

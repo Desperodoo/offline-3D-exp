@@ -17,6 +17,7 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   std_msgs
   geometry_msgs
+  message_generation
   quadrotor_msgs
   pointcloud_topo
   path_searching
@@ -35,10 +36,23 @@ find_package(catkin REQUIRED COMPONENTS
 
 )
 
+## 添加服务文件
+add_service_files(
+  FILES
+  NeuralTSP.srv
+)
+
+## 生成消息和服务
+generate_messages(
+  DEPENDENCIES
+  std_msgs
+  geometry_msgs
+)
+
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES epic_planner
-  CATKIN_DEPENDS pointcloud_topo active_perception path_searching traj_utils lkh_tsp_solver plan_manage frontier_manager
+  CATKIN_DEPENDS message_runtime pointcloud_topo active_perception path_searching traj_utils lkh_tsp_solver plan_manage frontier_manager
 
   # DEPENDS system_lib
 )
@@ -58,6 +72,7 @@ add_library(epic_planner
   src/fast_exploration_manager.cpp
   src/exploration_statistics.cpp
 )
+add_dependencies(epic_planner ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(epic_planner
   ${catkin_LIBRARIES}
 )
@@ -66,6 +81,7 @@ target_link_libraries(epic_planner
 add_library(topo_graph_integrated_extractor
   src/topo_graph_integrated_extractor.cpp
 )
+add_dependencies(topo_graph_integrated_extractor ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(topo_graph_integrated_extractor
   ${catkin_LIBRARIES}
 )

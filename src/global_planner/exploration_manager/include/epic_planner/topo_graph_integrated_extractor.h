@@ -51,16 +51,7 @@ struct EdgeInfo {
 // 拓扑图提取功能类
 class TopoGraphExtractorInline {
 public:
-    /**
-     * @brief 从TopoGraph中提取完整的节点和边信息
-     * @param topo_graph 拓扑图指针
-     * @param nodes 输出的节点信息列表
-     * @param edges 输出的边信息列表
-     */
-    static void exportCompleteGraph(TopoGraph::Ptr topo_graph, 
-                                   std::vector<NodeInfo>& nodes, 
-                                   std::vector<EdgeInfo>& edges);
-    
+
     /**
      * @brief 生成边连接信息
      * @param nodes 节点信息列表
@@ -268,6 +259,17 @@ private:
      * @param node_counter 节点计数器
      */
     void extractViewpointNodesEnhanced(std::vector<NodeInfo>& nodes, int& node_counter);
+    
+    /**
+     * @brief 根据TopoGraph的原始连接关系生成边（使用neighbors_和weight_）
+     * @param nodes 节点信息列表
+     * @param edges 边信息列表（输出）
+     * @param edge_counter 边计数器引用
+     */
+    void generateEdgesFromTopoGraph(const std::vector<NodeInfo>& nodes, 
+                                   std::vector<EdgeInfo>& edges, 
+                                   int& edge_counter);
+
 };
 
 } // namespace fast_planner

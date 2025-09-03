@@ -18,10 +18,14 @@ fsm/min_viewpoint_quality_threshold: 0.5  # 视点质量阈值（保留用于扩
 fsm/enable_safe_exit: true
 fsm/safe_exit_delay: 10.0  # 进入FINISH状态后10秒自动退出进程
 
+# Neural TSP Solver Configuration
+neural_tsp/use_neural_tsp: false
+
 global_planning/w_vdir: 1.0
 global_planning/w_yawdir: 0.0
 global_planning/w_firstnode: 0.2
-#viz
+
+# Visualization debugging has high overhead and is not recommended to be enabled.
 view_graph: true
 FrontierManager/view_cluster: false
 FrontierManager/view_frt: true

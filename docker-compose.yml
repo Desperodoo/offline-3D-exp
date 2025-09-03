@@ -1,0 +1,69 @@
+version: '3.8'
+
+# 创建独立的网络
+networks:
+  epic_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+services:
+  epic:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: epic:latest
+    container_name: epic_container
+    
+    # GPU支持
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      # ROS网络隔离配置
+      - ROS_HOSTNAME=localhost
+      - ROS_MASTER_URI=http://localhost:11311
+      - ROS_IP=127.0.0.1
+    
+    # 使用独立网络而非host模式
+    networks:
+      epic_network:
+        ipv4_address: 172.20.0.10
+    
+    # 权限设置
+    privileged: true
+    
+    # 卷挂载
+    volumes:
+      # X11转发（用于GUI应用如RViz）
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - $HOME/.Xauthority:/root/.Xauthority:rw
+      
+      # 持久化数据存储（数据集、收集的数据、训练模型）
+      - ./collected_data:/root/catkin_ws/collected_data:rw
+      - ./datasets:/root/catkin_ws/datasets:rw
+      - ./logs:/root/catkin_ws/logs:rw
+      
+      # 训练好的模型权重文件
+      - ./src/offline/results:/root/catkin_ws/src/offline/results:rw
+      
+      # 配置文件（可选，用于动态修改配置）
+      - ./src/offline/config.yaml:/root/catkin_ws/src/offline/config.yaml:rw
+    
+    # 设备挂载
+    devices:
+      - /dev/dri:/dev/dri  # GPU设备
+    
+    # 工作目录
+    working_dir: /root/catkin_ws
+    
+    # 健康检查（适配网络隔离）
+    healthcheck:
+      test: ["CMD-SHELL", "source /opt/ros/noetic/setup.bash && export ROS_MASTER_URI=http://localhost:11311 && timeout 5 rostopic list > /dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

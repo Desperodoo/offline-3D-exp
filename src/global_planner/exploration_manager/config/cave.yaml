@@ -4,6 +4,7 @@ cloud_topic: /quad0_pcl_render_node/cloud
 global_planning/w_vdir: 0.0
 global_planning/w_yawdir: 0.0
 global_planning/w_firstnode: 0.2
+
 # Visualization debugging has high overhead and is not recommended to be enabled.
 view_graph: true
 FrontierManager/view_cluster: false
@@ -19,6 +20,7 @@ bubble_topo/init_region_size_z: 2.0
 bubble_topo/cube_discrete_size: 0.4
 bubble_topo/odom_node_distance: 3.0
 bubble_astar/safe_distance: 0.6
+
 # map param
 max_update_region_num: 99999999
 frontier/candidate_dphi: 0.26

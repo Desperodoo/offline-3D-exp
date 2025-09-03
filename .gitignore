@@ -4,9 +4,9 @@ build/
 .catkin_tools/
 misc/
 topo_outputs/
-collected_data/
+collected_data*/
 src/MARSIM/map_generator/resource/
-datasets*/
+dataset*/
 duplicated/
 src/offline/results/
 src/offline/wandb/

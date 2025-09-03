@@ -4,7 +4,8 @@ cloud_topic: /quad0_pcl_render_node/cloud
 global_planning/w_vdir: 1.2
 global_planning/w_yawdir: 0.0
 global_planning/w_firstnode: 0.2
-#viz
+
+# Visualization debugging has high overhead and is not recommended to be enabled.
 view_graph: true
 FrontierManager/view_cluster: false
 FrontierManager/view_frt: true

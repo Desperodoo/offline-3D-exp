@@ -10,6 +10,7 @@
 #include <boost/lexical_cast.hpp>
 #include <epic_planner/expl_data.h>
 #include <epic_planner/fast_exploration_manager.h>
+#include <epic_planner/NeuralTSP.h>
 #include <fstream>
 #include <iostream>
 #include <lkh_tsp_solver/lkh_interface.h>
@@ -75,6 +76,21 @@ void FastExplorationManager::initialize(
   topo_extractor_->setDebugOutput(debug_output);
   ROS_INFO("✓ TopoExtractorIntegrated initialized - export dir: %s, debug: %s", 
            topo_export_dir.c_str(), debug_output ? "enabled" : "disabled");
+  
+  // 初始化神经网络TSP服务客户端
+  nh.param("neural_tsp/use_neural_tsp", use_neural_tsp_, false);
+  if (use_neural_tsp_) {
+    neural_tsp_client_ = nh.serviceClient<epic_planner::NeuralTSP>("neural_tsp_solve");
+    ROS_INFO("✓ Neural TSP client initialized, waiting for service...");
+    if (!neural_tsp_client_.waitForExistence(ros::Duration(5.0))) {
+      ROS_WARN("Neural TSP service not available, falling back to LKH solver");
+      use_neural_tsp_ = false;
+    } else {
+      ROS_INFO("✓ Neural TSP service connected successfully");
+    }
+  } else {
+    ROS_INFO("Using traditional LKH TSP solver");
+  }
   
   ros::Duration(1.0).sleep();
 }
@@ -367,10 +383,34 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
   ros::Time start_tsp = ros::Time::now();
   cout << "calculate tsp cost matrix cost " << (start_tsp - t2).toSec() * 1000
        << "ms" << endl;
-  solveLHK(mat, indices);
+       
+  // 尝试使用神经网络TSP求解
+  bool neural_tsp_success = false;
+  if (use_neural_tsp_ && viewpoint_reachable.size() > 1) {
+    ROS_INFO("Attempting neural TSP with %zu viewpoints", viewpoint_reachable.size());
+    int next_viewpoint_idx = solveNeuralTSP(viewpoint_reachable, pos);
+    
+    if (next_viewpoint_idx >= 0) {
+      // 神经网络成功求解，构建简化的路径
+      indices.clear();
+      indices.push_back(0);  // 起始点
+      indices.push_back(next_viewpoint_idx + 1);  // 选中的视点 (+1因为索引0是起始点)
+      neural_tsp_success = true;
+      ROS_INFO("✓ Neural TSP solved successfully, selected viewpoint %d", next_viewpoint_idx);
+    } else {
+      ROS_WARN("Neural TSP failed, falling back to LKH solver");
+    }
+  }
+  
+  // 如果神经网络求解失败，使用传统LKH求解器
+  if (!neural_tsp_success) {
+    solveLHK(mat, indices);
+  }
+  
   ros::Time end_tsp = ros::Time::now();
-  cout << "lkh solver cost: " << (end_tsp - start_tsp).toSec() * 1000 << "ms"
+  cout << "tsp solver cost: " << (end_tsp - start_tsp).toSec() * 1000 << "ms"
        << endl;
+  cout << "solver type: " << (neural_tsp_success ? "Neural" : "LKH") << endl;
   // if ((end_tsp - start_tsp).toSec() * 1000 > 100)
   //   exit(0);
   ed_->global_tour_.clear();
@@ -549,6 +589,236 @@ void FastExplorationManager::updateGoalNode() {
       std::reverse(path.begin(), path.end());
       nbr->paths_[ed_->next_goal_node_] = path;
     }
+  }
+}
+
+int FastExplorationManager::solveNeuralTSP(const vector<TopoNode::Ptr> &viewpoint_reachable, 
+                                          const Eigen::Vector3d &current_pos) {
+  /**
+   * 使用神经网络求解TSP问题，返回下一个目标视点的索引
+   * 传递完整的拓扑图信息给neural_tsp_server
+   * 
+   * @param viewpoint_reachable: 可达视点列表
+   * @param current_pos: 当前位置
+   * @return: 下一个目标视点在viewpoint_reachable中的索引，-1表示失败
+   */
+  
+  if (!use_neural_tsp_ || viewpoint_reachable.empty()) {
+    return -1;
+  }
+  
+  try {
+    // 构建服务请求
+    epic_planner::NeuralTSP srv;
+    
+    // 设置当前位置
+    srv.request.current_position.x = current_pos.x();
+    srv.request.current_position.y = current_pos.y();
+    srv.request.current_position.z = current_pos.z();
+    
+    // 获取完整拓扑图信息
+    auto topo_graph = planner_manager_->topo_graph_;
+    
+    // 从区域映射中收集所有拓扑节点
+    vector<TopoNode::Ptr> all_topo_nodes;
+    
+    // 遍历所有区域来收集节点
+    for (const auto& region_pair : topo_graph->reg_map_idx2ptr_) {
+      const auto& region_node = region_pair.second;  // RegionNode::Ptr
+      for (const auto& topo_node : region_node->topo_nodes_) {
+        all_topo_nodes.push_back(topo_node);
+      }
+    }
+    
+    // 如果没有从区域中找到节点，添加odom节点作为backup
+    if (all_topo_nodes.empty() && topo_graph->odom_node_) {
+      all_topo_nodes.push_back(topo_graph->odom_node_);
+    }
+    
+    ROS_INFO("Constructing neural TSP request with %zu nodes, %zu viewpoints", 
+             all_topo_nodes.size(), viewpoint_reachable.size());
+    
+    // 构建拓扑图节点信息 - 与epic3d_data_processor.py格式完全对齐
+    srv.request.node_positions.clear();
+    srv.request.node_yaws.clear();
+    srv.request.node_is_viewpoint.clear();
+    srv.request.node_is_current.clear();
+    srv.request.node_is_history.clear();
+    srv.request.node_region_ids.clear();          // 新增：region_id字段
+    srv.request.node_is_reachable.clear();
+    srv.request.node_tsp_order.clear();          // 修正：与srv定义对齐
+    srv.request.node_distances.clear();
+    srv.request.node_observation_scores.clear();
+    srv.request.node_cluster_distances.clear();
+    
+    // 创建节点索引映射
+    std::unordered_map<TopoNode::Ptr, int> node_to_index;
+    std::unordered_map<TopoNode::Ptr, int> node_to_region_id;
+    
+    // 构建region_id映射
+    for (const auto& region_pair : topo_graph->reg_map_idx2ptr_) {
+      const Eigen::Vector3i& region_idx = region_pair.first;  // Vector3i类型的region index
+      // 使用region index的哈希值作为region_id
+      int region_id = std::abs(region_idx.x() * 1000 + region_idx.y() * 100 + region_idx.z());
+      const auto& region_node = region_pair.second;
+      for (const auto& topo_node : region_node->topo_nodes_) {
+        node_to_region_id[topo_node] = region_id + 1000;  // 与txt文件格式对齐
+      }
+    }
+    
+    for (size_t i = 0; i < all_topo_nodes.size(); ++i) {
+      auto node = all_topo_nodes[i];
+      node_to_index[node] = i;
+      
+      // 节点位置 (字段1-3: x, y, z)
+      geometry_msgs::Point pos;
+      pos.x = node->center_.x();
+      pos.y = node->center_.y(); 
+      pos.z = node->center_.z();
+      srv.request.node_positions.push_back(pos);
+      
+      // 航向角 (字段4: yaw)
+      srv.request.node_yaws.push_back(node->yaw_);
+      
+      // 是否为视点 (字段5: is_viewpoint)
+      bool is_viewpoint = std::find(viewpoint_reachable.begin(), viewpoint_reachable.end(), node) != viewpoint_reachable.end();
+      srv.request.node_is_viewpoint.push_back(is_viewpoint || node->is_viewpoint_);
+      
+      // 是否为当前位置 (字段6: is_current)
+      bool is_current = (node == topo_graph->odom_node_) || 
+                       ((node->center_ - current_pos.cast<float>()).norm() < 0.5f);
+      srv.request.node_is_current.push_back(is_current);
+      
+      // 历史状态 (字段7: is_history)
+      bool is_history = node->is_history_odom_node_;
+      srv.request.node_is_history.push_back(is_history);
+      
+      // Region ID (字段8: region_id)
+      auto region_it = node_to_region_id.find(node);
+      int region_id = (region_it != node_to_region_id.end()) ? region_it->second : 0;
+      srv.request.node_region_ids.push_back(region_id);
+      
+      // 可达性 (字段9: is_reachable)
+      srv.request.node_is_reachable.push_back(true);
+      
+      // TSP顺序索引 (字段10: tsp_order_index)
+      // 对于当前推理阶段，大部分节点设为-1（未分配）
+      // 只有当前节点设为0，视点节点可以设为其他值或-1
+      int tsp_order = -1;
+      if (is_current) {
+        tsp_order = 0;  // 当前位置为起始点
+      }
+      srv.request.node_tsp_order.push_back(tsp_order);
+      
+      // 距离计算 (字段11: distance)
+      float distance = (node->center_ - current_pos.cast<float>()).norm();
+      srv.request.node_distances.push_back(distance);
+      
+      // 观测得分 (字段12: observation_score)
+      // 基于是否为视点和距离的启发式计算
+      float obs_score = 0.0f;
+      if (is_viewpoint) {
+        obs_score = std::max(0.0f, 10.0f - distance * 0.1f);
+      }
+      srv.request.node_observation_scores.push_back(obs_score);
+      
+      // 聚类距离 (字段13: cluster_distance)
+      // 对于推理阶段，可以使用启发式值或-1.0表示未计算
+      float cluster_dist = is_viewpoint ? distance * 0.8f : -1.0f;
+      srv.request.node_cluster_distances.push_back(cluster_dist);
+    }
+    
+    // 构建边信息
+    srv.request.edge_from_nodes.clear();
+    srv.request.edge_to_nodes.clear();
+    srv.request.edge_weights.clear();
+    srv.request.edge_is_reachable.clear();
+    
+    for (size_t i = 0; i < all_topo_nodes.size(); ++i) {
+      auto node = all_topo_nodes[i];
+      for (const auto& neighbor : node->neighbors_) {
+        auto it = node_to_index.find(neighbor);
+        if (it != node_to_index.end()) {
+          srv.request.edge_from_nodes.push_back(i);
+          srv.request.edge_to_nodes.push_back(it->second);
+          
+          // 权重信息
+          auto weight_it = node->weight_.find(neighbor);
+          float weight = (weight_it != node->weight_.end()) ? weight_it->second : 1.0f;
+          srv.request.edge_weights.push_back(weight);
+          
+          // 可达性（检查unreachable列表）
+          bool is_reachable = node->unreachable_nbrs_.find(neighbor) == node->unreachable_nbrs_.end();
+          srv.request.edge_is_reachable.push_back(is_reachable);
+        }
+      }
+    }
+    
+    // 设置视点信息
+    srv.request.viewpoints.clear();
+    srv.request.viewpoint_indices.clear();
+    srv.request.viewpoint_distances.clear();
+    
+    for (size_t i = 0; i < viewpoint_reachable.size(); ++i) {
+      auto vp = viewpoint_reachable[i];
+      
+      // 视点位置
+      geometry_msgs::Point vp_pos;
+      vp_pos.x = vp->center_.x();
+      vp_pos.y = vp->center_.y();
+      vp_pos.z = vp->center_.z();
+      srv.request.viewpoints.push_back(vp_pos);
+      
+      // 视点在拓扑图中的索引
+      auto it = node_to_index.find(vp);
+      int topo_index = (it != node_to_index.end()) ? it->second : i;  // fallback to local index
+      srv.request.viewpoint_indices.push_back(topo_index);
+      
+      // 视点距离
+      float vp_distance = (vp->center_ - current_pos.cast<float>()).norm();
+      srv.request.viewpoint_distances.push_back(vp_distance);
+    }
+    
+    // 探索统计信息
+    srv.request.viewpoints_found = viewpoint_reachable.size();
+    srv.request.viewpoints_reachable = viewpoint_reachable.size();
+    srv.request.viewpoints_visited = 0;  // 简化处理
+    srv.request.exploration_area = 0.0f;  // 可以从exploration_stats_获取
+    srv.request.exploration_efficiency = 1.0f;  // 简化处理
+    
+    // 调用神经网络服务
+    ros::Time start_time = ros::Time::now();
+    ROS_INFO("Calling neural TSP service with complete topo graph: %zu nodes, %zu edges, %zu viewpoints",
+             srv.request.node_positions.size(), srv.request.edge_from_nodes.size(), viewpoint_reachable.size());
+             
+    if (neural_tsp_client_.call(srv)) {
+      ros::Time end_time = ros::Time::now();
+      
+      if (srv.response.success) {
+        int next_idx = srv.response.next_viewpoint_index;
+        
+        // 验证索引有效性
+        if (next_idx >= 0 && next_idx < viewpoint_reachable.size()) {
+          ROS_INFO("Neural TSP solved: next viewpoint index = %d, time = %.2f ms, confidence = %.2f", 
+                   next_idx, (end_time - start_time).toSec() * 1000, srv.response.confidence_score);
+          return next_idx;
+        } else {
+          ROS_WARN("Neural TSP returned invalid index: %d (valid range: 0-%zu)", 
+                   next_idx, viewpoint_reachable.size()-1);
+          return -1;
+        }
+      } else {
+        ROS_WARN("Neural TSP failed: %s", srv.response.message.c_str());
+        return -1;
+      }
+    } else {
+      ROS_ERROR("Failed to call neural TSP service");
+      return -1;
+    }
+    
+  } catch (const std::exception& e) {
+    ROS_ERROR("Exception in neural TSP solving: %s", e.what());
+    return -1;
   }
 }
 } // namespace fast_planner

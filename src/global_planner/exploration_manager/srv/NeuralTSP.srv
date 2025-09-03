@@ -1,0 +1,47 @@
+# 请求神经网络TSP求解的服务定义
+# 基于EPIC数据流水线，包含construct_observation所需的完整拓扑图信息
+
+# 拓扑图节点信息
+geometry_msgs/Point[] node_positions    # 所有节点的3D位置
+float32[] node_yaws                     # 节点航向角
+bool[] node_is_viewpoint                # 节点是否为视点
+bool[] node_is_current                  # 节点是否为当前位置  
+bool[] node_is_history                  # 节点是否为历史位置
+int32[] node_region_ids                 # 节点所属区域ID
+bool[] node_is_reachable               # 节点是否可达
+int32[] node_tsp_order                 # 节点在TSP中的顺序(-1表示无效)
+float32[] node_distances               # 节点到当前位置的距离
+float32[] node_observation_scores      # 节点观测收益评分
+float32[] node_cluster_distances       # 节点到聚类中心的距离
+
+# 拓扑图边信息
+int32[] edge_from_nodes                # 边的起始节点ID
+int32[] edge_to_nodes                  # 边的终止节点ID  
+float32[] edge_weights                 # 边的权重
+bool[] edge_is_reachable              # 边是否可达
+
+# 视点相关信息
+geometry_msgs/Point current_position    # 当前位置
+geometry_msgs/Point[] viewpoints        # 可达视点位置数组
+int32[] viewpoint_indices               # 视点在拓扑图中的索引
+float32[] viewpoint_distances          # 视点距离信息
+float32[] viewpoint_benefits           # 视点收益评分
+
+# 探索统计信息
+int32 viewpoints_found                 # 发现的视点数量
+int32 viewpoints_reachable             # 可达的视点数量
+int32 viewpoints_visited               # 已访问的视点数量  
+float32 exploration_area               # 已探索面积
+float32 exploration_efficiency         # 探索效率
+
+# 可选的成本矩阵(用于fallback)
+float64[] cost_matrix                   # 成本矩阵(展平)，可选
+int32 matrix_dimension                  # 矩阵维度
+
+---
+
+# 响应
+bool success                            # 是否成功求解
+int32 next_viewpoint_index             # 下一个目标视点索引
+string message                          # 附加信息
+float32 confidence_score               # 模型置信度评分

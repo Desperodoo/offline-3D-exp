@@ -137,12 +137,30 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
     // 要报min-step的case
     LocalTrajData *info = &planner_manager_->local_data_;
     double t_cur = (ros::Time::now() - info->start_time_).toSec();
-    double time_to_end = info->duration_ - t_cur;
+    // double time_to_end = info->duration_ - t_cur;  // 暂时未使用
     if (expl_manager_->ed_->global_tour_.size() == 2) {
       Eigen::Vector3f goal = expl_manager_->ed_->global_tour_[1];
       if ((goal - fd_->odom_pos_).norm() < 1e-1) {
-        transitState(FINISH, "fsm");
-        return;
+
+        // transitState(FINISH, "fsm");
+        // return;
+
+        // 检查是否使用Neural TSP模式
+        if (expl_manager_->use_neural_tsp_) {
+          // Neural TSP模式：到达当前视点不意味着探索完成
+          // 触发重新规划，寻找下一个目标
+          ROS_INFO("Neural TSP: Reached current viewpoint, triggering replanning");
+          // 清空当前tour，让系统重新规划下一个目标
+          expl_manager_->ed_->global_tour_.clear();
+          // 保持在PLAN_TRAJ状态，不转换到FINISH
+          return;
+        } else {
+          // LKH模式：原有逻辑，到达终点表示探索完成
+          ROS_INFO("LKH mode: Reached final waypoint, exploration completed");
+          transitState(FINISH, "fsm - LKH mode completed");
+          return;
+        }
+
       }
     }
     ros::Time tplan = ros::Time::now();

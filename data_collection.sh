@@ -348,7 +348,7 @@ setup_output_directory() {
     local point_id="$3"
     
     local timestamp=$(date +"%Y%m%d_%H%M%S")
-    local output_dir="$EPIC_DIR/collected_data/${map_type}_${batch_id}_${point_id}_${timestamp}"
+    local output_dir="$EPIC_DIR/collected_data_v2/${map_type}_${batch_id}_${point_id}_${timestamp}"
     
     mkdir -p "$output_dir/raw_data"
     
@@ -1083,7 +1083,7 @@ run_batch_collection() {
     log_info "=== 批量采集完成 ==="
     log_info "成功: $successful 次"
     log_info "失败: $failed 次"
-    log_info "输出目录: $EPIC_DIR/collected_data"
+    log_info "输出目录: $EPIC_DIR/collected_data_v2"
 }
 
 # 主函数

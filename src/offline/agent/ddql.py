@@ -27,7 +27,7 @@ class TrainConfig:
     use_gumbel_softmax: bool = False  # 是否使用Gumbel-Softmax
     gumbel_hard: bool = False  # 是否使用直通估计器
     temperature_start: float = 1.0  # 初始温度
-    temperature_end: float = 0.1  # 最终温度
+    temperature_end: float = 1.0  # 最终温度
     temperature_decay_steps: int = 50000  # 温度衰减步数
     max_timesteps: int = int(3e5)  # 运行环境的最大时间步数
     checkpoints_path: Optional[str] = None  # 保存路径

@@ -39,8 +39,8 @@ def get_args():
     parser.add_argument('--world_size', type=int, default=None, help='DDP训练使用的GPU数量，默认使用所有可用GPU')
     parser.add_argument('--seed', type=int, default=0, help='随机种子')
     parser.add_argument('--max_timesteps', type=int, default=100000, help='最大训练步数')
-    parser.add_argument('--batch_size', type=int, default=128, help='批次大小')
-    parser.add_argument('--mini_batch_size', type=int, default=128, help='小批次大小')
+    parser.add_argument('--batch_size', type=int, default=256, help='批次大小')
+    parser.add_argument('--mini_batch_size', type=int, default=256, help='小批次大小')
     parser.add_argument('--gnn_hidden_dim', type=int, default=64, help='GNN嵌入维度')
     parser.add_argument('--epoches', type=int, default=1, help='训练的epoch数量')
     parser.add_argument("--algorithm", type=str, default="iql", 
@@ -79,7 +79,7 @@ def get_args():
     parser.add_argument('--normalize_q', action='store_true', help='是否归一化Q值用于计算BC权重')
 
     # DDQL特有参数 (更新以匹配新的配置)
-    parser.add_argument('--n_timesteps', type=int, default=50, help='DDQL扩散步数')
+    parser.add_argument('--n_timesteps', type=int, default=10, help='DDQL扩散步数')
     parser.add_argument('--diffusion_mode', type=str, default='pointer', choices=['pointer', 'simple'], 
                         help='DDQL扩散模式：pointer (动态动作空间) 或 simple (固定动作空间)')
     parser.add_argument('--use_gumbel_softmax', action='store_true', help='是否使用Gumbel-Softmax采样')

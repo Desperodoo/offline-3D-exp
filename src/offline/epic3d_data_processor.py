@@ -396,7 +396,7 @@ class EPIC3DEpisodeProcessor:
         max_nodes = self.config.get('max_nodes', 500)
         max_viewpoints = self.config.get('max_viewpoints', 100)
         k_size = self.config.get('k_size', 20)
-        node_feature_dim = self.config.get('node_feature_dim', 9)
+        node_feature_dim = self.config.get('node_feature_dim', 6)
         
         # 标准化参数
         position_scale = self.config.get('position_scale', 100.0)
@@ -442,11 +442,11 @@ class EPIC3DEpisodeProcessor:
                 feature_vector = np.array([
                     rel_pos[0], rel_pos[1], rel_pos[2],      # 相对3D位置
                     obs_score,                                # 标准化观测得分
-                    cluster_dist,                            # 标准化路径代价
+                    # cluster_dist,                            # 标准化路径代价
                     float(node['is_viewpoint']),            # 节点类型
                     float(node['is_history']),              # 访问状态
-                    distance,                               # 距离特征
-                    0.5                                     # 占位的中心性得分
+                    # distance,                               # 距离特征
+                    # 0.5                                     # 占位的中心性得分
                 ], dtype=np.float32)
                 
                 node_inputs[t, i] = feature_vector

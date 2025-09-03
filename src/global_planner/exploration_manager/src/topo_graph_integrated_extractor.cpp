@@ -9,30 +9,6 @@
 
 namespace fast_planner {
 
-void TopoGraphExtractorInline::exportCompleteGraph(TopoGraph::Ptr topo_graph, 
-                                                   std::vector<NodeInfo>& nodes, 
-                                                   std::vector<EdgeInfo>& edges) {
-    if (!topo_graph) {
-        ROS_WARN("TopoGraph is null");
-        return;
-    }
-
-    nodes.clear();
-    edges.clear();
-    int node_counter = 0;
-    int edge_counter = 0;
-
-    // 提取各种类型的节点（不包含reachability和TSP信息）
-    extractRegionNodes(topo_graph, nodes, node_counter);
-    extractOdomNode(topo_graph, nodes, node_counter);
-    extractViewpointNodes(topo_graph, nodes, node_counter);
-
-    // 生成边连接信息
-    generateEdges(nodes, edges, edge_counter);
-
-    ROS_INFO("Extracted %zu nodes and %zu edges from topo graph", 
-            nodes.size(), edges.size());
-}
 
 void TopoGraphExtractorInline::extractRegionNodes(TopoGraph::Ptr topo_graph, 
                                                   std::vector<NodeInfo>& nodes, 
@@ -361,7 +337,11 @@ void TopoGraphExtractorInline::generateEdges(const std::vector<NodeInfo>& nodes,
                                              std::vector<EdgeInfo>& edges, 
                                              int& edge_counter,
                                              double distance_threshold) {
-    // 基于距离创建连接关系
+    ROS_WARN("⚠️  TopoGraphExtractorInline::generateEdges is using SIMPLIFIED distance-based edge generation!");
+    ROS_WARN("⚠️  This does NOT use the original TopoGraph's neighbors_ and weight_ information!");
+    ROS_WARN("⚠️  Consider using TopoExtractorIntegrated::generateEdgesFromTopoGraph() for accurate edges!");
+    
+    // 基于距离创建连接关系 (这是简化版本，不使用原始拓扑图的连接信息)
     for (size_t i = 0; i < nodes.size(); ++i) {
         for (size_t j = i + 1; j < nodes.size(); ++j) {
             double dist = (nodes[i].position - nodes[j].position).norm();
@@ -376,7 +356,7 @@ void TopoGraphExtractorInline::generateEdges(const std::vector<NodeInfo>& nodes,
             }
         }
     }
-    ROS_DEBUG("Generated %d edges with distance threshold %.2f", 
+    ROS_DEBUG("Generated %d edges with distance threshold %.2f (SIMPLIFIED METHOD)", 
               edge_counter, distance_threshold);
 }
 
@@ -543,8 +523,9 @@ void TopoExtractorIntegrated::extractCompleteGraphEnhanced(std::vector<NodeInfo>
     extractOdomNodeEnhanced(nodes, node_counter);
     extractViewpointNodesEnhanced(nodes, node_counter);
 
-    // 生成边连接信息
-    TopoGraphExtractorInline::generateEdges(nodes, edges, edge_counter, distance_threshold_);
+    // 生成边连接信息 - 使用原始拓扑图的真实连接信息
+    generateEdgesFromTopoGraph(nodes, edges, edge_counter);
+    // TopoGraphExtractorInline::generateEdges(nodes, edges, edge_counter, distance_threshold_);
 
     ROS_INFO("Enhanced extraction completed: %zu nodes, %zu edges", nodes.size(), edges.size());
 }
@@ -1047,6 +1028,169 @@ void TopoExtractorIntegrated::extractViewpointNodesEnhanced(std::vector<NodeInfo
     if (total_viewpoint_nodes > 0) {
         ROS_INFO("Enhanced extracted %d dedicated viewpoint nodes from %d regions", 
                  total_viewpoint_nodes, regions_with_viewpoints);
+    }
+}
+
+void TopoExtractorIntegrated::generateEdgesFromTopoGraph(const std::vector<NodeInfo>& nodes,
+                                                        std::vector<EdgeInfo>& edges,
+                                                        int& edge_counter) {
+    if (!topo_graph_) {
+        ROS_WARN("TopoGraph is null, cannot extract real edges");
+        return;
+    }
+    
+    ROS_INFO("=== Generating Edges From Original TopoGraph ===");
+    
+    // 构建NodeInfo -> TopoNode::Ptr的映射
+    std::map<int, TopoNode::Ptr> node_id_to_topo_ptr;
+    
+    // 收集所有TopoNode指针，建立映射关系
+    auto collectTopoNodes = [&](const std::vector<RegionNode::Ptr>& regions, const std::string& source_name) {
+        for (size_t i = 0; i < regions.size(); ++i) {
+            auto region = regions[i];
+            if (!region) continue;
+            
+            for (auto topo_node : region->topo_nodes_) {
+                if (!topo_node) continue;
+                
+                // 根据位置找到对应的NodeInfo
+                for (const auto& node_info : nodes) {
+                    Eigen::Vector3d topo_pos = topo_node->center_.cast<double>();
+                    double pos_diff = (node_info.position - topo_pos).norm();
+                    
+                    if (pos_diff < 1e-6) { // 位置匹配
+                        node_id_to_topo_ptr[node_info.node_id] = topo_node;
+                        break;
+                    }
+                }
+            }
+        }
+        ROS_DEBUG("Collected TopoNode mappings from %s: %zu regions", 
+                 source_name.c_str(), regions.size());
+    };
+    
+    // 从各个区域收集TopoNode映射
+    collectTopoNodes(topo_graph_->regions_arr_, "regions_arr_");
+    collectTopoNodes(topo_graph_->toponodes_update_region_arr_, "toponodes_update_region_arr_");
+    collectTopoNodes(topo_graph_->viewpoints_update_region_arr_, "viewpoints_update_region_arr_");
+    
+    // 处理reg_map_idx2ptr_中的节点
+    for (auto& pair : topo_graph_->reg_map_idx2ptr_) {
+        auto region = pair.second;
+        if (!region) continue;
+        
+        for (auto topo_node : region->topo_nodes_) {
+            if (!topo_node) continue;
+            
+            // 根据位置找到对应的NodeInfo
+            for (const auto& node_info : nodes) {
+                Eigen::Vector3d topo_pos = topo_node->center_.cast<double>();
+                double pos_diff = (node_info.position - topo_pos).norm();
+                
+                if (pos_diff < 1e-6) { // 位置匹配
+                    node_id_to_topo_ptr[node_info.node_id] = topo_node;
+                    break;
+                }
+            }
+        }
+    }
+    
+    // 处理history_odom_nodes_
+    for (auto topo_node : topo_graph_->history_odom_nodes_) {
+        if (!topo_node) continue;
+        
+        for (const auto& node_info : nodes) {
+            Eigen::Vector3d topo_pos = topo_node->center_.cast<double>();
+            double pos_diff = (node_info.position - topo_pos).norm();
+            
+            if (pos_diff < 1e-6) { // 位置匹配
+                node_id_to_topo_ptr[node_info.node_id] = topo_node;
+                break;
+            }
+        }
+    }
+    
+    // 处理当前odom节点
+    if (topo_graph_->odom_node_) {
+        for (const auto& node_info : nodes) {
+            if (node_info.is_current_odom) {
+                node_id_to_topo_ptr[node_info.node_id] = topo_graph_->odom_node_;
+                break;
+            }
+        }
+    }
+    
+    ROS_INFO("Built node mapping: %zu NodeInfo -> TopoNode mappings", node_id_to_topo_ptr.size());
+    
+    // 基于原始拓扑图的neighbors_和weight_信息生成边
+    std::set<std::pair<int, int>> added_edges; // 避免重复边
+    int original_edges_found = 0;
+    
+    for (const auto& pair : node_id_to_topo_ptr) {
+        int node_id = pair.first;
+        TopoNode::Ptr topo_node = pair.second;
+        
+        if (!topo_node) continue;
+        
+        // 遍历该节点的所有邻居
+        for (TopoNode::Ptr neighbor : topo_node->neighbors_) {
+            if (!neighbor) continue;
+            
+            // 找到邻居对应的node_id
+            int neighbor_node_id = -1;
+            for (const auto& neighbor_pair : node_id_to_topo_ptr) {
+                if (neighbor_pair.second == neighbor) {
+                    neighbor_node_id = neighbor_pair.first;
+                    break;
+                }
+            }
+            
+            if (neighbor_node_id == -1) continue; // 邻居不在当前节点列表中
+            
+            // 确保边的方向一致性（较小的node_id作为from_node_id）
+            int from_id = std::min(node_id, neighbor_node_id);
+            int to_id = std::max(node_id, neighbor_node_id);
+            
+            // 避免重复边
+            std::pair<int, int> edge_key = std::make_pair(from_id, to_id);
+            if (added_edges.count(edge_key)) continue;
+            
+            added_edges.insert(edge_key);
+            original_edges_found++;
+            
+            // 创建边信息
+            EdgeInfo edge;
+            edge.edge_id = edge_counter++;
+            edge.from_node_id = from_id;
+            edge.to_node_id = to_id;
+            
+            // 使用原始拓扑图的权重信息
+            if (topo_node->weight_.count(neighbor)) {
+                edge.weight = static_cast<double>(topo_node->weight_[neighbor]);
+                edge.is_reachable = true; // 在neighbors_中的都是可达的
+            } else {
+                // 如果没有权重信息，计算欧几里得距离
+                Eigen::Vector3d pos1, pos2;
+                for (const auto& node_info : nodes) {
+                    if (node_info.node_id == from_id) pos1 = node_info.position;
+                    if (node_info.node_id == to_id) pos2 = node_info.position;
+                }
+                edge.weight = (pos1 - pos2).norm();
+                edge.is_reachable = true;
+            }
+            
+            edges.push_back(edge);
+        }
+    }
+    
+    ROS_INFO("✓ Generated %d edges from original TopoGraph neighbors_ information", original_edges_found);
+    ROS_INFO("✓ Total nodes with TopoNode mapping: %zu / %zu", node_id_to_topo_ptr.size(), nodes.size());
+    
+    if (debug_output_) {
+        ROS_INFO("Edge generation summary:");
+        ROS_INFO("  - Total edges created: %d", original_edges_found);
+        ROS_INFO("  - Using original TopoGraph connectivity");
+        ROS_INFO("  - Edges with weight_ info: %d", original_edges_found); // 假设大部分都有weight信息
     }
 }
 
